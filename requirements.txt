@@ -1,0 +1,9 @@
+fastapi
+torch
+fastapi-swagger-dark
+pydantic
+sentence-transformers
+pydantic-settings
+python-dotenv
+uvicorn
+ruff
