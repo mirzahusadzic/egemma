@@ -95,17 +95,23 @@ DEFAULT_DIMENSIONS_QUERY = fastapi.Query(
 )
 
 
+DEFAULT_DIMENSIONS_QUERY = fastapi.Query(
+    None, description="Select embedding dimensions"
+)
+
 @app.post(
     "/embed",
     summary="Embed Text",
-    description="Embeds a given text using the Gemma embedding 300m model. "
-    "You can choose the embedding dimension.",
+    description="Embeds a given text using the Gemma embedding 300m model "
+    "with Matryoshka support.",
     dependencies=[Depends(get_api_key)],
 )
 async def embed(
     input: TextInput,
     dimensions: Optional[List[EmbeddingDimensions]] = DEFAULT_DIMENSIONS_QUERY,
 ):
+    if dimensions is None:
+        dimensions = [EmbeddingDimensions.DIM_128]
     try:
         embedding = await run_in_threadpool(model.encode, input.text)
 
@@ -114,8 +120,9 @@ async def embed(
 
         result = {}
         for dim in dimensions:
-            if dim in [128, 256, 512, 768]:
-                result[f"embedding_{dim}d"] = embedding[:dim].tolist()
+            dim_value = dim.value
+            if dim_value in [128, 256, 512, 768]:
+                result[f"embedding_{dim_value}d"] = embedding[:dim_value].tolist()
 
         return result
     except Exception as e:

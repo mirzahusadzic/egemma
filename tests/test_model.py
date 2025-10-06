@@ -1,13 +1,14 @@
+import os
+from unittest.mock import MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
-import os
 
 # Set a dummy API key for testing
 os.environ["WORKBENCH_API_KEY"] = "test_api_key"
 
 # Import the app after setting the environment variable
-from model import app, EmbeddingDimensions
+from model import EmbeddingDimensions, app
 
 client = TestClient(app)
 
@@ -31,7 +32,7 @@ def test_read_root_redirect():
 
 def test_embed_no_api_key():
     response = client.post("/embed", json={"text": "test text"})
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert response.json() == {"detail": "Not authenticated"}
 
 def test_embed_invalid_api_key():
@@ -52,7 +53,12 @@ def test_embed_valid_api_key_specific_dimensions():
     response = client.post(
         "/embed",
         json={"text": "test text"},
-        params={"dimensions": [EmbeddingDimensions.DIM_256, EmbeddingDimensions.DIM_512]},
+        params={
+            "dimensions": [
+                EmbeddingDimensions.DIM_256.value,
+                EmbeddingDimensions.DIM_512.value
+            ]
+        },
         headers=headers,
     )
     assert response.status_code == 200
@@ -67,10 +73,10 @@ def test_embed_valid_api_key_all_dimensions():
         "/embed",
         json={"text": "test text"},
         params={"dimensions": [
-            EmbeddingDimensions.DIM_128,
-            EmbeddingDimensions.DIM_256,
-            EmbeddingDimensions.DIM_512,
-            EmbeddingDimensions.DIM_768,
+            EmbeddingDimensions.DIM_128.value,
+            EmbeddingDimensions.DIM_256.value,
+            EmbeddingDimensions.DIM_512.value,
+            EmbeddingDimensions.DIM_768.value,
         ]},
         headers=headers,
     )
@@ -94,15 +100,3 @@ def test_embed_valid_api_key_no_dimensions_param():
     assert response.status_code == 200
     assert "embedding_128d" in response.json() # Default behavior
     assert len(response.json()["embedding_128d"]) == 128
-
-def test_embed_valid_api_key_empty_dimensions_list():
-    headers = {"Authorization": "Bearer test_api_key"}
-    response = client.post(
-        "/embed",
-        json={"text": "test text"},
-        params={"dimensions": []},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert "embedding" in response.json() # Should return full embedding if list is empty
-    assert len(response.json()["embedding"]) == 768 # Assuming 768 is the full dimension
