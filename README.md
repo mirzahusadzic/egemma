@@ -1,6 +1,6 @@
 # FastAPI Embedding API with Gemma Model
 
-This project provides a FastAPI application for embedding text using the Gemma embedding 300m model with Matryoshka support.
+This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma/) with Matryoshka support.
 
 ## Setup
 
