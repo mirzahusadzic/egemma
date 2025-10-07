@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from enum import Enum
@@ -6,10 +7,14 @@ from typing import TYPE_CHECKING, Annotated, List, Optional
 
 import fastapi
 import fastapi_swagger_dark as fsd
+import torch
 from fastapi import Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -57,16 +62,14 @@ class SentenceTransformerWrapper:
 
     @staticmethod
     def _get_optimal_device() -> str:
-        import torch
-
         if torch.cuda.is_available():
-            print("CUDA is available. Using CUDA device.")
+            logger.info("CUDA is available. Using CUDA device.")
             return "cuda"
         elif torch.backends.mps.is_available():
-            print("MPS is available. Using MPS device.")
+            logger.info("MPS is available. Using MPS device.")
             return "mps"
         else:
-            print("No GPU acceleration available. Using CPU device.")
+            logger.info("No GPU acceleration available. Using CPU device.")
             return "cpu"
 
     def load_model(self):
