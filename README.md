@@ -83,6 +83,10 @@ curl -X POST "http://localhost:8000/embed?dimensions=128&dimensions=256" \
 ```json
 {
   "embedding_128d": [...],
-  "embedding_256d": [...]
+  "embedding_256d": [...] 
 }
 ```
+
+## Roadmap
+
+*   **Expand API Endpoints:** Explore adding specialized endpoints or parameters to leverage the various prompts supported by the `sentence_transformers` model (e.g., for query, document, clustering, reranking tasks).
