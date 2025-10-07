@@ -10,3 +10,4 @@ ruff
 pytest
 pytest-cov
 httpx
+pytest-mock

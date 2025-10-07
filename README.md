@@ -4,6 +4,7 @@ This project provides a FastAPI application for embedding text using the [Gemma 
 
 ## Key Features
 
+*   **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
 *   **Local Gemma Embedding:** Utilize the powerful Gemma embedding 300m model directly on your local machine.
 *   **Sentence Caching:** Improves performance by caching embedding results for frequently requested texts using `lru_cache`.
 *   **Bearer Token Authentication:** Secure your embedding endpoint with a configurable API key, ensuring only authorized access.

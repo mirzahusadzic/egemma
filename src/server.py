@@ -55,16 +55,24 @@ class SentenceTransformerWrapper:
     def __init__(self):
         self.model: "Optional[SentenceTransformer]" = None
 
-    def load_model(self):
+    @staticmethod
+    def _get_optimal_device() -> str:
         import torch
+
+        if torch.cuda.is_available():
+            print("CUDA is available. Using CUDA device.")
+            return "cuda"
+        elif torch.backends.mps.is_available():
+            print("MPS is available. Using MPS device.")
+            return "mps"
+        else:
+            print("No GPU acceleration available. Using CPU device.")
+            return "cpu"
+
+    def load_model(self):
         from sentence_transformers import SentenceTransformer
 
-        if torch.backends.mps.is_available():
-            device = "mps"
-            print("MPS is available. Using MPS device.")
-        else:
-            device = "cpu"
-            print("MPS is not available. Using CPU device.")
+        device = self._get_optimal_device()
         self.model = SentenceTransformer("google/embeddinggemma-300m", device=device)
 
     def encode(self, text: str):
