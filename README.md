@@ -24,7 +24,7 @@ Follow these steps to set up the project locally:
 
     ```
     WORKBENCH_API_KEY="your_api_key_here"
-    HF_TOKEN="your_huggingface_token_here" # Optional, for private models or rate limits
+    HF_TOKEN="your_huggingface_token_here" # Optional, for private models or rate limits (required for Gemma)
     ```
     Replace `"your_api_key_here"` with your actual API key. If you are using private Hugging Face models or encountering rate limits, replace `"your_huggingface_token_here"` with your Hugging Face API token. Alternatively, you can log in via the Hugging Face CLI: `huggingface-cli login`.
 
@@ -33,7 +33,7 @@ Follow these steps to set up the project locally:
 To start the FastAPI server, run the following command:
 
 ```bash
-uvicorn model:app --host localhost --port 8002
+uvicorn server:app --host localhost --port 8002
 ```
 
 The API documentation will be available at `http://localhost:8002/docs`.
