@@ -1,4 +1,3 @@
-import os
 from unittest.mock import patch
 
 import numpy as np
@@ -6,9 +5,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Set a dummy API key for testing
-os.environ["WORKBENCH_API_KEY"] = "test_api_key"
+from src.server import EmbeddingDimensions, app, get_api_key
 
-from src.server import EmbeddingDimensions, app
+
+@pytest.fixture
+def mock_api_key_dependency():
+    """
+    Overrides the get_api_key dependency to always return a valid key.
+    """
+    app.dependency_overrides[get_api_key] = lambda: "test_api_key"
+    yield
+    del app.dependency_overrides[get_api_key]
 
 
 @pytest.fixture
@@ -46,7 +53,7 @@ def test_embed_invalid_api_key(client):
     assert response.json() == {"detail": "Invalid API Key"}
 
 
-def test_embed_valid_api_key_default_dimensions(client):
+def test_embed_valid_api_key_default_dimensions(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     response = client.post("/embed", json={"text": "test text"}, headers=headers)
     assert response.status_code == 200
@@ -54,7 +61,7 @@ def test_embed_valid_api_key_default_dimensions(client):
     assert len(response.json()["embedding_128d"]) == 128
 
 
-def test_embed_valid_api_key_specific_dimensions(client):
+def test_embed_valid_api_key_specific_dimensions(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     response = client.post(
         "/embed",
@@ -74,7 +81,7 @@ def test_embed_valid_api_key_specific_dimensions(client):
     assert len(response.json()["embedding_512d"]) == 512
 
 
-def test_embed_valid_api_key_all_dimensions(client):
+def test_embed_valid_api_key_all_dimensions(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     response = client.post(
         "/embed",
@@ -100,7 +107,7 @@ def test_embed_valid_api_key_all_dimensions(client):
     assert len(response.json()["embedding_768d"]) == 768
 
 
-def test_embed_valid_api_key_no_dimensions_param(client):
+def test_embed_valid_api_key_no_dimensions_param(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     response = client.post(
         "/embed",
@@ -112,7 +119,7 @@ def test_embed_valid_api_key_no_dimensions_param(client):
     assert len(response.json()["embedding_128d"]) == 128
 
 
-def test_encoder_cache_hit(client):
+def test_encoder_cache_hit(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     text_to_embed = "This is a test sentence for caching."
 
@@ -146,7 +153,7 @@ def test_encoder_cache_hit(client):
         mock_model_wrapper_encode.assert_called_once_with(text_to_embed)
 
 
-def test_embed_empty_dimensions(client):
+def test_embed_empty_dimensions(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     response = client.post(
         "/embed",
@@ -159,7 +166,7 @@ def test_embed_empty_dimensions(client):
     assert isinstance(response.json()["embedding_128d"], list)
 
 
-def test_embed_model_not_loaded_error(client):
+def test_embed_model_not_loaded_error(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     text_to_embed = "test text"
 
