@@ -33,7 +33,7 @@ Follow these steps to set up the project locally:
 To start the FastAPI server, run the following command:
 
 ```bash
-uvicorn server:app --host localhost --port 8002
+uvicorn src.server:app --host localhost --port 8000
 ```
 
-The API documentation will be available at `http://localhost:8002/docs`.
+The API documentation will be available at `http://localhost:8000/docs`.

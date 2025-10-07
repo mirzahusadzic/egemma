@@ -8,4 +8,5 @@ python-dotenv
 uvicorn
 ruff
 pytest
+pytest-cov
 httpx

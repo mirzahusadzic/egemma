@@ -1,4 +1,4 @@
-name: Ruff Lint
+name: Lint and Test
 
 on:
   push:
@@ -7,17 +7,19 @@ on:
     branches: [ "main" ]
 
 jobs:
-  lint:
+  build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.x' # Use a suitable Python version
+        python-version: '3.x'
     - name: Install uv
       run: pip install uv
     - name: Install dependencies
       run: uv pip install -r requirements.txt
     - name: Run Ruff
       run: uv run ruff check .
+    - name: Run Pytest
+      run: uv run pytest -v
