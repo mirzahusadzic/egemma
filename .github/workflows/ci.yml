@@ -24,4 +24,6 @@ jobs:
     - name: Run Ruff
       run: uv run ruff check .
     - name: Run Pytest
+      env:
+        WORKBENCH_API_KEY: ${{ secrets.WORKBENCH_API_KEY }}
       run: uv run pytest -v
