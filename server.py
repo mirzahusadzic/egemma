@@ -1,5 +1,6 @@
 import os
 from enum import Enum
+from functools import lru_cache
 from typing import Annotated, List, Optional
 
 import fastapi
@@ -75,6 +76,11 @@ else:
 model = SentenceTransformer(settings.model_name, device=device)
 
 
+@lru_cache(maxsize=128)
+def cached_encode(text: str):
+    return model.encode(text)
+
+
 class TextInput(BaseModel):
     text: str
 
@@ -113,7 +119,7 @@ async def embed(
     if dimensions is None:
         dimensions = [EmbeddingDimensions.DIM_128]
     try:
-        embedding = await run_in_threadpool(model.encode, input.text)
+        embedding = await run_in_threadpool(cached_encode, input.text)
 
         if not dimensions:
             return {"embedding": embedding.tolist()}
