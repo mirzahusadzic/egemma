@@ -65,7 +65,7 @@ The API documentation will be available at `http://localhost:8000/docs`, featuri
 
 **Query Parameters:**
 
-*   `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, all dimensions will be returned.
+*   `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
 
 **Example Request (using curl):**
 
