@@ -6,7 +6,7 @@ from typing import Annotated, List, Optional
 
 import fastapi
 import fastapi_swagger_dark as fsd
-from fastapi import Depends, File, HTTPException, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
@@ -136,6 +136,12 @@ async def embed(
 )
 async def summarize(
     file: Annotated[UploadFile, File(...)],
+    max_tokens: Optional[int] = Query(
+        default=None, description="Maximum number of tokens for the summary."
+    ),
+    temperature: Optional[float] = Query(
+        default=None, description="Temperature for the summary generation."
+    ),
 ):
     if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
         raise HTTPException(
@@ -148,9 +154,16 @@ async def summarize(
         ext = file.filename.split(".")[-1].lower()
         language = EXTENSION_TO_LANGUAGE.get(ext, "code")
 
-        summary = await run_in_threadpool(
-            summarization_model_wrapper.summarize, content, language
-        )
+        # Use a wrapper to pass keyword arguments to the threadpool
+        def do_summarize():
+            return summarization_model_wrapper.summarize(
+                content,
+                language=language,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+
+        summary = await run_in_threadpool(do_summarize)
 
         # Wrap in Markdown formatting if it's a Markdown file
         if language.lower() == "markdown":

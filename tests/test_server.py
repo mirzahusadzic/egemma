@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -37,6 +37,26 @@ def client():
 
         with TestClient(app) as c:
             yield c
+
+
+@pytest.fixture
+def caching_test_client():
+    """
+    Provides a TestClient where the real summarization wrapper is used,
+    but the expensive model calls are mocked.
+    """
+    with (
+        patch("src.server.embedding_model_wrapper.load_model"),
+        patch("llama_cpp.Llama.from_pretrained") as mock_from_pretrained,
+    ):
+        mock_llama_instance = MagicMock()
+        mock_llama_instance.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": "This is a cached summary."}}]
+        }
+        mock_from_pretrained.return_value = mock_llama_instance
+
+        with TestClient(app) as c:
+            yield c, mock_llama_instance.create_chat_completion
 
 
 def test_read_root_redirect(client):
@@ -247,3 +267,33 @@ def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypat
         )
     assert response.status_code == 404
     assert response.json() == {"detail": "Summarization feature is disabled."}
+
+
+def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_path):
+    client, mock_create_completion = caching_test_client
+    headers = {"Authorization": "Bearer test_api_key"}
+    file_content = "def hello(): return 'world'  # Unique content for cache test"
+    (tmp_path / "test.py").write_text(file_content)
+
+    # Clear the cache on the standalone function before the test
+    from src.summarization import _cached_summarize
+
+    _cached_summarize.cache_clear()
+
+    # First call
+    with open(tmp_path / "test.py", "rb") as f:
+        response1 = client.post(
+            "/summarize", files={"file": ("test.py", f)}, headers=headers
+        )
+    assert response1.status_code == 200
+    assert response1.json()["summary"] == "This is a cached summary."
+
+    # Second call
+    with open(tmp_path / "test.py", "rb") as f:
+        response2 = client.post(
+            "/summarize", files={"file": ("test.py", f)}, headers=headers
+        )
+    assert response2.status_code == 200
+
+    # Assert that the expensive model call was only made once
+    mock_create_completion.assert_called_once()

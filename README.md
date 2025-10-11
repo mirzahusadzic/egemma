@@ -1,6 +1,6 @@
-# FastAPI Embedding API with Gemma Model
+# FastAPI API with Gemma Models for Embedding and Summarization
 
-This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma/) with Matryoshka support. It's designed to serve as a robust local server for integrating Gemma embeddings into your workflow via a simple endpoint.
+This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma) with Matryoshka support, and for summarizing code and Markdown files using a [Gemma-based summarization model](https://deepmind.google/models/gemma/gemma-3). It's designed to serve as a robust local server for integrating Gemma capabilities into your workflow via simple endpoints.
 
 ## Key Features
 
@@ -16,7 +16,7 @@ This project provides a FastAPI application for embedding text using the [Gemma 
 
 Follow these steps to set up the project locally:
 
-1. **Create and Activate Virtual Environment:**
+1. **Create and (optionally) Activate Virtual Environment:**
     It is recommended to use `uv` for managing your Python environment.
 
     ```bash
@@ -46,6 +46,10 @@ Follow these steps to set up the project locally:
     # --- Summarization Settings --- 
     # Set to false to disable the /summarize endpoint
     SUMMARY_ENABLED=true
+    # Hugging Face repository ID for the summarization model (default: google/gemma-3-12b-it-qat-q4_0-gguf)
+    SUMMARY_MODEL_NAME="google/gemma-3-12b-it-qat-q4_0-gguf"
+    # Filename of the GGUF model within the repository (default: gemma-3-12b-it-q4_0.gguf)
+    SUMMARY_MODEL_BASENAME="gemma-3-12b-it-q4_0.gguf"
     # Maximum number of tokens for the summary (default: 300)
     SUMMARY_MAX_TOKEN=1024
     # Temperature for the summary generation (default: 0.2)
@@ -59,7 +63,7 @@ Follow these steps to set up the project locally:
 To start the FastAPI server, run the following command:
 
 ```bash
-uvicorn src.server:app --host localhost --port 8000
+uv run uvicorn src.server:app --host localhost --port 8000
 ```
 
 The API documentation will be available at `http://localhost:8000/docs`, featuring a sleek dark theme.
@@ -114,10 +118,15 @@ curl -X POST "http://localhost:8000/embed?dimensions=128&dimensions=256" \
 
 This endpoint uses a `multipart/form-data` request to handle file uploads. The file should be sent under the `file` key.
 
+**Query Parameters:**
+
+*   `max_tokens`: Optional. Maximum number of tokens for the summary. (e.g., `?max_tokens=512`)
+*   `temperature`: Optional. Temperature for the summary generation. Lower values (e.g., `0.2`) make the output more deterministic, higher values (e.g., `0.8`) make it more creative. (e.g., `&temperature=0.7`)
+
 **Example Request (using curl):**
 
 ```bash
-curl -X POST 'http://localhost:8000/summarize' \
+curl -X POST 'http://localhost:8000/summarize?max_tokens=1024&temperature=0.2' \
   -H 'accept: application/json' \
   -H 'Authorization: Bearer your_api_key_here' \
   -H 'Content-Type: multipart/form-data' \
