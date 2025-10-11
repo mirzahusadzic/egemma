@@ -131,8 +131,9 @@ async def embed(
 
 @app.post(
     "/summarize",
-    summary="Summarize Code or Markdown File",
-    description="Upload a code or Markdown file and get a Markdown-formatted summary.",
+    summary="Summarize Code, Markdown, or Log File",
+    description="Upload a code, Markdown, or log file and get a summary. "
+    "Log files are automatically condensed before summarization.",
     dependencies=[Depends(get_api_key)],
 )
 async def summarize(
