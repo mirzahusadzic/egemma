@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 # Set a dummy API key for testing
-from src.server import EmbeddingDimensions, app, get_api_key
+from src.server import EmbeddingDimensions, app, get_api_key, settings
 
 
 @pytest.fixture
@@ -21,14 +21,20 @@ def mock_api_key_dependency():
 @pytest.fixture
 def client():
     """
-    Provides a TestClient instance with a mocked SentenceTransformer.
+    Provides a TestClient instance with mocked model wrappers.
     """
     with (
-        patch("src.server.model_wrapper.load_model") as mock_load,
-        patch("src.server.model_wrapper.encode") as mock_encode,
+        patch("src.server.embedding_model_wrapper.load_model") as mock_embedding_load,
+        patch("src.server.embedding_model_wrapper.encode") as mock_embedding_encode,
+        patch("src.server.SummarizationModelWrapper") as MockSummarizationWrapper,
     ):
-        mock_load.return_value = None
-        mock_encode.return_value = np.full(768, 0.1)
+        mock_embedding_load.return_value = None
+        mock_embedding_encode.return_value = np.full(768, 0.1)
+
+        mock_summarization_instance = MockSummarizationWrapper.return_value
+        mock_summarization_instance.load_model.return_value = None
+        mock_summarization_instance.summarize.return_value = "This is a summary."
+
         with TestClient(app) as c:
             yield c
 
@@ -123,7 +129,9 @@ def test_encoder_cache_hit(client, mock_api_key_dependency):
     headers = {"Authorization": "Bearer test_api_key"}
     text_to_embed = "This is a test sentence for caching."
 
-    with patch("src.server.model_wrapper.encode") as mock_model_wrapper_encode:
+    with patch(
+        "src.server.embedding_model_wrapper.encode"
+    ) as mock_model_wrapper_encode:
         mock_model_wrapper_encode.return_value = np.full(
             768, 0.1
         )  # Mock the return value
@@ -174,7 +182,7 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency):
 
     cached_encode.cache_clear()
 
-    with patch("src.server.model_wrapper.encode") as mock_encode:
+    with patch("src.server.embedding_model_wrapper.encode") as mock_encode:
         mock_encode.side_effect = RuntimeError("Model not loaded")
         response = client.post(
             "/embed",
@@ -183,3 +191,59 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency):
         )
         assert response.status_code == 500, response.text
         assert response.json() == {"detail": "Model not loaded"}
+
+
+def test_summarize_no_api_key(client, tmp_path):
+    (tmp_path / "test.py").write_text("def hello(): return 'world'")
+    with open(tmp_path / "test.py", "rb") as f:
+        response = client.post("/summarize", files={"file": ("test.py", f)})
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Not authenticated"}
+
+
+def test_summarize_invalid_api_key(client, tmp_path):
+    headers = {"Authorization": "Bearer wrong_key"}
+    (tmp_path / "test.py").write_text("def hello(): return 'world'")
+    with open(tmp_path / "test.py", "rb") as f:
+        response = client.post(
+            "/summarize", files={"file": ("test.py", f)}, headers=headers
+        )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid API Key"}
+
+
+def test_summarize_valid_api_key(client, mock_api_key_dependency, tmp_path):
+    headers = {"Authorization": "Bearer test_api_key"}
+    (tmp_path / "test.py").write_text("def hello(): return 'world'")
+    with open(tmp_path / "test.py", "rb") as f:
+        response = client.post(
+            "/summarize", files={"file": ("test.py", f)}, headers=headers
+        )
+    assert response.status_code == 200
+    assert response.json() == {"language": "Python", "summary": "This is a summary."}
+
+
+def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_path):
+    headers = {"Authorization": "Bearer test_api_key"}
+    (tmp_path / "test.py").write_text("def hello(): return 'world'")
+
+    with patch("src.server.summarization_model_wrapper.summarize") as mock_summarize:
+        mock_summarize.side_effect = RuntimeError("Model not loaded")
+        with open(tmp_path / "test.py", "rb") as f:
+            response = client.post(
+                "/summarize", files={"file": ("test.py", f)}, headers=headers
+            )
+        assert response.status_code == 500, response.text
+        assert response.json() == {"detail": "Model not loaded"}
+
+
+def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "SUMMARY_ENABLED", False)
+    headers = {"Authorization": "Bearer test_api_key"}
+    (tmp_path / "test.py").write_text("def hello(): return 'world'")
+    with open(tmp_path / "test.py", "rb") as f:
+        response = client.post(
+            "/summarize", files={"file": ("test.py", f)}, headers=headers
+        )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Summarization feature is disabled."}

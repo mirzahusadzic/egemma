@@ -1,32 +1,23 @@
 import logging
-import os
 from contextlib import asynccontextmanager
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Annotated, List, Optional
+from typing import Annotated, List, Optional
 
 import fastapi
 import fastapi_swagger_dark as fsd
-import torch
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, File, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from .config import settings
+from .embedding import SentenceTransformerWrapper
+from .summarization import EXTENSION_TO_LANGUAGE, SummarizationModelWrapper
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
-
-# Conditionally load environment variables from .env file
-if os.getenv("WORKBENCH_APP_ENV") != "production":
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
-# Retrieve API key from environment
-WORKBENCH_API_KEY = os.getenv("WORKBENCH_API_KEY")
 
 # Define security scheme
 security = HTTPBearer()
@@ -35,12 +26,12 @@ security = HTTPBearer()
 async def get_api_key(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
 ):
-    if WORKBENCH_API_KEY is None:
+    if settings.WORKBENCH_API_KEY is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server configuration error: WORKBENCH_API_KEY not set.",
         )
-    if credentials.credentials != WORKBENCH_API_KEY:
+    if credentials.credentials != settings.WORKBENCH_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
@@ -56,51 +47,27 @@ class EmbeddingDimensions(int, Enum):
     DIM_768 = 768
 
 
-class SentenceTransformerWrapper:
-    def __init__(self):
-        self.model: "Optional[SentenceTransformer]" = None
-
-    @staticmethod
-    def _get_optimal_device() -> str:
-        if torch.cuda.is_available():
-            logger.info("CUDA is available. Using CUDA device.")
-            return "cuda"
-        elif torch.backends.mps.is_available():
-            logger.info("MPS is available. Using MPS device.")
-            return "mps"
-        else:
-            logger.info("No GPU acceleration available. Using CPU device.")
-            return "cpu"
-
-    def load_model(self):
-        from sentence_transformers import SentenceTransformer
-
-        device = self._get_optimal_device()
-        self.model = SentenceTransformer("google/embeddinggemma-300m", device=device)
-
-    def encode(self, text: str):
-        if self.model is None:
-            raise RuntimeError("Model not loaded")
-        return self.model.encode(text)
-
-
-model_wrapper = SentenceTransformerWrapper()
+embedding_model_wrapper = SentenceTransformerWrapper()
+summarization_model_wrapper: SummarizationModelWrapper | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     """
-    Loads the SentenceTransformer model on application startup.
+    Loads the models on application startup.
     """
-    model_wrapper.load_model()
+    global summarization_model_wrapper
+    embedding_model_wrapper.load_model()
+    if settings.SUMMARY_ENABLED:
+        summarization_model_wrapper = SummarizationModelWrapper()
+        summarization_model_wrapper.load_model()
     yield
 
 
 app = fastapi.FastAPI(
-    title="Embedding API",
-    description="API for embedding text using the Gemma embedding 300m model "
-    "with Matryoshka support.",
-    version="0.1.0",
+    title="Code Intelligence API",
+    description="API for embedding and summarizing code using Google's Gemma models.",
+    version="0.2.0",
     docs_url=None,
     lifespan=lifespan,
 )
@@ -108,7 +75,7 @@ app = fastapi.FastAPI(
 
 @lru_cache(maxsize=128)
 def cached_encode(text: str):
-    return model_wrapper.encode(text)
+    return embedding_model_wrapper.encode(text)
 
 
 class TextInput(BaseModel):
@@ -159,6 +126,40 @@ async def embed(
         return result
     except Exception as e:
         raise fastapi.HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.post(
+    "/summarize",
+    summary="Summarize Code or Markdown File",
+    description="Upload a code or Markdown file and get a Markdown-formatted summary.",
+    dependencies=[Depends(get_api_key)],
+)
+async def summarize(
+    file: Annotated[UploadFile, File(...)],
+):
+    if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
+        raise HTTPException(
+            status_code=404, detail="Summarization feature is disabled."
+        )
+    try:
+        code_bytes = await file.read()
+        content = code_bytes.decode("utf-8")
+
+        ext = file.filename.split(".")[-1].lower()
+        language = EXTENSION_TO_LANGUAGE.get(ext, "code")
+
+        summary = await run_in_threadpool(
+            summarization_model_wrapper.summarize, content, language
+        )
+
+        # Wrap in Markdown formatting if it's a Markdown file
+        if language.lower() == "markdown":
+            summary = f"# Summary of Markdown File\n\n{summary}"
+
+        return {"language": language, "summary": summary}
+    except Exception as e:
+        logger.error(f"Error during summarization: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/", tags=["Root"])

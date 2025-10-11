@@ -11,3 +11,5 @@ pytest
 pytest-cov
 httpx
 pytest-mock
+llama-cpp-python
+python-multipart
