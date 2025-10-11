@@ -25,6 +25,7 @@ class Settings(BaseSettings):
         "xml": "XML",
         "sql": "SQL",
         "md": "Markdown",
+        "log": "Log File",
     }
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

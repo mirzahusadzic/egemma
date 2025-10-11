@@ -1,4 +1,5 @@
 import logging
+import os
 from functools import lru_cache
 from typing import Optional
 
@@ -9,11 +10,35 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 
+def _get_persona_system_message(
+    language: str, persona_type: str, max_tokens: int
+) -> str:
+    """Loads a persona system message from a Markdown file."""
+    persona_path = os.path.join("personas", persona_type, f"{language.lower()}.md")
+    if not os.path.exists(persona_path):
+        # Fallback to a default persona if a specific one doesn't exist
+        persona_path = os.path.join("personas", persona_type, "default.md")
+        if not os.path.exists(persona_path):
+            raise FileNotFoundError(
+                f"No persona file found for {language} or default in {persona_type}"
+            )
+
+    with open(persona_path, "r") as f:
+        persona_content = f.read()
+
+    # Safely format, only if placeholders exist
+    format_kwargs = {"language": language, "max_tokens": max_tokens}
+    if "{language}" in persona_content or "{max_tokens}" in persona_content:
+        return persona_content.format(**format_kwargs)
+    return persona_content
+
+
 @lru_cache(maxsize=128)
 def _cached_summarize(
     model: Llama,
     content: str,
     language: str = "code",
+    persona_name: str = "developer",
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
 ) -> str:
@@ -28,19 +53,11 @@ def _cached_summarize(
         temperature if temperature is not None else settings.SUMMARY_TEMP
     )
 
-    # Use different prompt for Markdown files
-    if language.lower() == "markdown":
-        system_msg = (
-            "You are a helpful assistant that summarizes technical Markdown files "
-            "(such as README.md or documentation). Provide a high-level summary, "
-            "including project purpose, features, usage, and structure."
-        )
-    else:
-        system_msg = (
-            f"You are an expert {language} developer. "
-            f"Summarize the following {language} code, explaining its purpose, "
-            "main functions, and logic."
-        )
+    # Determine persona type based on language
+    persona_type = "docs" if language.lower() == "markdown" else "code"
+    system_msg = _get_persona_system_message(
+        persona_name, persona_type, final_max_tokens
+    )
 
     messages = [
         {"role": "system", "content": system_msg},
@@ -77,9 +94,12 @@ class SummarizationModelWrapper:
         self,
         content: str,
         language: str = "code",
+        persona_name: str = "developer",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> str:
         if self.model is None:
             raise RuntimeError("Model not loaded")
-        return _cached_summarize(self.model, content, language, max_tokens, temperature)
+        return _cached_summarize(
+            self.model, content, language, persona_name, max_tokens, temperature
+        )

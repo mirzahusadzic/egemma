@@ -142,6 +142,12 @@ async def summarize(
     temperature: Optional[float] = Query(
         default=None, description="Temperature for the summary generation."
     ),
+    persona: Optional[str] = Query(
+        default=None,
+        description=(
+            "Persona to use for summarization (e.g., 'developer', 'assistant')."
+        ),
+    ),
 ):
     if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
         raise HTTPException(
@@ -154,11 +160,21 @@ async def summarize(
         ext = file.filename.split(".")[-1].lower()
         language = settings.EXTENSION_TO_LANGUAGE.get(ext, "code")
 
+        # Determine persona name, with defaults based on language type
+        if persona is None:
+            if language.lower() == "markdown":
+                persona_name = "assistant"
+            else:
+                persona_name = "developer"
+        else:
+            persona_name = persona
+
         # Use a wrapper to pass keyword arguments to the threadpool
         def do_summarize():
             return summarization_model_wrapper.summarize(
                 content,
                 language=language,
+                persona_name=persona_name,
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
