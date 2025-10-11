@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from .config import settings
 from .embedding import SentenceTransformerWrapper
 from .summarization import SummarizationModelWrapper
+from .util.log_condenser import condense_log
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -159,6 +160,10 @@ async def summarize(
 
         ext = file.filename.split(".")[-1].lower()
         language = settings.EXTENSION_TO_LANGUAGE.get(ext, "code")
+
+        # Condense log files before summarization
+        if language == "Log File":
+            content = condense_log(content)
 
         # Determine persona name, with defaults based on language type
         if persona is None:

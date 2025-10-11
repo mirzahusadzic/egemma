@@ -43,7 +43,6 @@ def _cached_summarize(
     temperature: Optional[float] = None,
 ) -> str:
     """Helper function to cache summarization results."""
-    content = content[:8000]  # Trim to context window
 
     # Determine final token and temperature values
     final_max_tokens = (

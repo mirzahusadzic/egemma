@@ -6,6 +6,7 @@ This project provides a FastAPI application for embedding text using the [Gemma 
 
 * **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
 * **Local Gemma Embedding:** Utilize the powerful Gemma embedding 300m model directly on your local machine.
+* **Log File Condensation:** Automatically condenses repetitive log entries before summarization, improving the quality of summaries for verbose log data.
 * **Code Summarization:** Generate summaries for code and Markdown files with an optional, configurable endpoint.
 * **Sentence Caching:** Improves performance by caching embedding results for frequently requested texts using `lru_cache`.
 * **Bearer Token Authentication:** Secure your embedding endpoint with a configurable API key, ensuring only authorized access.
@@ -108,11 +109,11 @@ curl -X POST "http://localhost:8000/embed?dimensions=128&dimensions=256" \
 }
 ```
 
-### Summarize Code or Markdown File
+### Summarize Code, Markdown, or Log File
 
 **Endpoint:** `POST /summarize`
 **Authentication:** Bearer Token (using `WORKBENCH_API_KEY`)
-**Description:** Upload a code or Markdown file and get a summary, optionally formatted in Markdown if the input is a Markdown file. Summarization is guided by a configurable persona.
+**Description:** Upload a code, Markdown, or log file and get a summary. Log files are automatically condensed before summarization. Summarization is guided by a configurable persona.
 
 **Request Body:**
 
