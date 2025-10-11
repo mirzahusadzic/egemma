@@ -1,5 +1,4 @@
 import logging
-import os
 from functools import lru_cache
 from typing import Optional
 
@@ -8,28 +7,6 @@ from llama_cpp import Llama
 from .config import settings
 
 logger = logging.getLogger(__name__)
-
-SUMMARY_MAX_TOKEN = int(os.getenv("SUMMARY_MAX_TOKEN", 300))
-SUMMARY_TEMP = float(os.getenv("SUMMARY_TEMP", 0.2))
-
-# Mapping file extensions to languages/types
-EXTENSION_TO_LANGUAGE = {
-    "py": "Python",
-    "js": "JavaScript",
-    "ts": "TypeScript",
-    "java": "Java",
-    "cpp": "C++",
-    "c": "C",
-    "go": "Go",
-    "rs": "Rust",
-    "sh": "Shell script",
-    "html": "HTML",
-    "css": "CSS",
-    "json": "JSON",
-    "xml": "XML",
-    "sql": "SQL",
-    "md": "Markdown",
-}
 
 
 @lru_cache(maxsize=128)
@@ -44,8 +21,12 @@ def _cached_summarize(
     content = content[:8000]  # Trim to context window
 
     # Determine final token and temperature values
-    final_max_tokens = max_tokens if max_tokens is not None else SUMMARY_MAX_TOKEN
-    final_temperature = temperature if temperature is not None else SUMMARY_TEMP
+    final_max_tokens = (
+        max_tokens if max_tokens is not None else settings.SUMMARY_MAX_TOKEN
+    )
+    final_temperature = (
+        temperature if temperature is not None else settings.SUMMARY_TEMP
+    )
 
     # Use different prompt for Markdown files
     if language.lower() == "markdown":

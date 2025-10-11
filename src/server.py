@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from .config import settings
 from .embedding import SentenceTransformerWrapper
-from .summarization import EXTENSION_TO_LANGUAGE, SummarizationModelWrapper
+from .summarization import SummarizationModelWrapper
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -152,7 +152,7 @@ async def summarize(
         content = code_bytes.decode("utf-8")
 
         ext = file.filename.split(".")[-1].lower()
-        language = EXTENSION_TO_LANGUAGE.get(ext, "code")
+        language = settings.EXTENSION_TO_LANGUAGE.get(ext, "code")
 
         # Use a wrapper to pass keyword arguments to the threadpool
         def do_summarize():
