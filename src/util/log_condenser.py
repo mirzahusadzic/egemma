@@ -28,7 +28,7 @@ def condense_log(log_content: str, repetition_threshold: int = 5) -> str:
     generalized_line_occurrences = {}
 
     # Regex patterns for common dynamic elements
-    TIMESTAMP_PATTERN = re.compile(r"^\[.*\]")
+    TIMESTAMP_PATTERN = re.compile(r"^\[[^]]*\]")
 
     def generalize_line(line: str) -> tuple[str, str | None]:
         """Replaces the timestamp in a log line with a `[TIMESTAMP]` placeholder

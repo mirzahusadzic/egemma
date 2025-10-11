@@ -123,3 +123,23 @@ def test_condense_log_with_empty_lines():
         "[2023-01-01 10:00:03] INFO: Message 3"
     )
     assert condense_log(log_content, repetition_threshold=2) == expected_output
+
+
+def test_condense_log_with_multiple_brackets_in_message():
+    log_content = (
+        "[2023-01-01 10:00:01] INFO: Processed request [ID: 12345] "
+        "for user [john.doe]\n"
+        "[2023-01-01 10:00:02] INFO: Processed request [ID: 12345] "
+        "for user [john.doe]\n"
+        "[2023-01-01 10:00:03] INFO: Processed request [ID: 12345] "
+        "for user [john.doe]\n"
+        "[2023-01-01 10:00:04] INFO: Processed request [ID: 12345] "
+        "for user [john.doe]\n"
+        "[2023-01-01 10:00:05] INFO: Processed request [ID: 12345] "
+        "for user [john.doe]"
+    )
+    expected_output = (
+        "(Repeated 5 times between 2023-01-01 10:00:01 and 2023-01-01 10:00:05)\n"
+        "[2023-01-01 10:00:01] INFO: Processed request [ID: 12345] for user [john.doe]"
+    )
+    assert condense_log(log_content, repetition_threshold=3) == expected_output
