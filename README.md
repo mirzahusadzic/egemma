@@ -1,6 +1,6 @@
 # FastAPI API with Gemma Models for Embedding and Summarization
 
-This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma) with Matryoshka support, and for summarizing code and Markdown files using a [Gemma-based summarization model](https://deepmind.google/models/gemma/gemma-3). It's designed to serve as a robust local server for integrating Gemma capabilities into your workflow via simple endpoints.
+This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma) with Matryoshka support, and for summarizing code, logs, and Markdown files. Summarization is powered by a [Gemma-based model](https://deepmind.google/models/gemma/gemma-3), which can be chosen from the Hugging Face repository to suit your needs, and leverages a persona feature for tailored summaries. It's designed to serve as a robust local server for integrating Gemma capabilities into your workflow via simple endpoints.
 
 ## Key Features
 
