@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     SUMMARY_MAX_TOKEN: int = 300
     SUMMARY_TEMP: float = 0.2
     SUMMARY_N_CTX: int = 8192
+    EMBED_RATE_LIMIT_SECONDS: int = 10
+    EMBED_RATE_LIMIT_CALLS: int = 5
+    SUMMARIZE_RATE_LIMIT_SECONDS: int = 60
+    SUMMARIZE_RATE_LIMIT_CALLS: int = 2
     EXTENSION_TO_LANGUAGE: dict[str, str] = {
         "py": "Python",
         "js": "JavaScript",

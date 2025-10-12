@@ -13,7 +13,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .config import settings
 from .embedding import SentenceTransformerWrapper
 from .summarization import SummarizationModelWrapper
-from .util.log_condenser import condense_log
+from .util import condense_log, is_likely_binary
+from .util.rate_limiter import get_in_memory_rate_limiter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ async def lifespan(app: fastapi.FastAPI):
     if settings.SUMMARY_ENABLED:
         summarization_model_wrapper = SummarizationModelWrapper()
         summarization_model_wrapper.load_model()
+
     yield
 
 
@@ -124,7 +126,15 @@ DEFAULT_PROMPT_NAME_QUERY = fastapi.Query(
         "Embeds the content of an uploaded file using the Gemma embedding 300m model "
         "with Matryoshka support."
     ),
-    dependencies=[Depends(get_api_key)],
+    dependencies=[
+        Depends(get_api_key),
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.EMBED_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.EMBED_RATE_LIMIT_CALLS,
+            )
+        ),
+    ],
 )
 async def embed(
     file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
@@ -138,6 +148,11 @@ async def embed(
         dimensions = [EmbeddingDimensions.DIM_128]
     try:
         file_content_bytes = await file.read()
+        if is_likely_binary(file_content_bytes):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file appears to be binary and cannot be embedded.",
+            )
         file_content = file_content_bytes.decode("utf-8")
 
         embedding = await run_in_threadpool(
@@ -165,7 +180,15 @@ async def embed(
     summary="Summarize Code, Markdown, or Log File",
     description="Upload a code, Markdown, or log file and get a summary. "
     "Log files are automatically condensed before summarization.",
-    dependencies=[Depends(get_api_key)],
+    dependencies=[
+        Depends(get_api_key),
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.SUMMARIZE_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.SUMMARIZE_RATE_LIMIT_CALLS,
+            )
+        ),
+    ],
 )
 async def summarize(
     file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
@@ -188,6 +211,11 @@ async def summarize(
         )
     try:
         code_bytes = await file.read()
+        if is_likely_binary(code_bytes):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uploaded file appears to be binary and cannot be summarized.",
+            )
         content = code_bytes.decode("utf-8")
 
         ext = file.filename.split(".")[-1].lower()

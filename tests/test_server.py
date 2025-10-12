@@ -2,10 +2,20 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 
 # Set a dummy API key for testing
+from fastapi import Request
+from fastapi.testclient import TestClient
+
 from src.server import EmbeddingDimensions, app, get_api_key, settings
+from src.util.rate_limiter import get_in_memory_rate_limiter
+
+
+@pytest.fixture(autouse=True)
+def clear_rate_limiter_state():
+    from src.util.rate_limiter import _client_last_request_time
+
+    _client_last_request_time.clear()
 
 
 @pytest.fixture
@@ -20,9 +30,22 @@ def mock_api_key_dependency():
 
 @pytest.fixture
 def client():
-    """
-    Provides a TestClient instance with mocked model wrappers.
-    """
+    """Provides a TestClient with mocked models and disabled rate limiting."""
+
+    async def allow_all_requests(request: Request):
+        pass
+
+    # Store original dependency to restore it later
+    original_get_in_memory_rate_limiter = app.dependency_overrides.get(
+        get_in_memory_rate_limiter
+    )
+
+    # Override the factory function itself
+    app.dependency_overrides[get_in_memory_rate_limiter] = (
+        lambda *args, **kwargs: allow_all_requests
+    )
+
+    # Apply patches for model loading *before* TestClient is initialized
     with (
         patch("src.server.embedding_model_wrapper.load_model") as mock_embedding_load,
         patch("src.server.embedding_model_wrapper.encode") as mock_embedding_encode,
@@ -35,8 +58,17 @@ def client():
         mock_summarization_instance.load_model.return_value = None
         mock_summarization_instance.summarize.return_value = "This is a summary."
 
+        # Now create TestClient, so lifespan runs with mocks active
         with TestClient(app) as c:
             yield c
+
+    # Restore original dependency after the test
+    if original_get_in_memory_rate_limiter:
+        app.dependency_overrides[get_in_memory_rate_limiter] = (
+            original_get_in_memory_rate_limiter
+        )
+    else:
+        del app.dependency_overrides[get_in_memory_rate_limiter]
 
 
 @pytest.fixture
@@ -45,6 +77,20 @@ def caching_test_client():
     Provides a TestClient where the real summarization wrapper is used,
     but the expensive model calls are mocked.
     """
+
+    async def allow_all_requests(request: Request):
+        pass
+
+    # Store original dependency to restore it later
+    original_get_in_memory_rate_limiter = app.dependency_overrides.get(
+        get_in_memory_rate_limiter
+    )
+
+    # Override the factory function itself
+    app.dependency_overrides[get_in_memory_rate_limiter] = (
+        lambda *args, **kwargs: allow_all_requests
+    )
+
     with (
         patch("src.server.embedding_model_wrapper.load_model"),
         patch("llama_cpp.Llama.from_pretrained") as mock_from_pretrained,
@@ -57,6 +103,14 @@ def caching_test_client():
 
         with TestClient(app) as c:
             yield c, mock_llama_instance.create_chat_completion
+
+    # Restore original dependency after the test
+    if original_get_in_memory_rate_limiter:
+        app.dependency_overrides[get_in_memory_rate_limiter] = (
+            original_get_in_memory_rate_limiter
+        )
+    else:
+        del app.dependency_overrides[get_in_memory_rate_limiter]
 
 
 def test_read_root_redirect(client):

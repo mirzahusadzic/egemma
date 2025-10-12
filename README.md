@@ -4,8 +4,9 @@ This project provides a FastAPI application for embedding text using the [Gemma 
 
 ## Key Features
 
-*   **Prompt Flexibility for Embeddings:** Utilize various prompt types (e.g., 'query', 'document', 'clustering') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.
-*   **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
+* **Rate Limiting:** Includes an in-memory rate limiter to prevent abuse of the API endpoints. This is particularly useful in a local setup to simulate production-like conditions and to prevent excessive resource usage. The rate limiter is enabled by default and can be configured using environment variables.
+* **Prompt Flexibility for Embeddings:** Utilize various prompt types (e.g., 'query', 'document', 'clustering') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.
+* **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
 * **Local Gemma Embedding:** Utilize the powerful Gemma embedding 300m model directly on your local machine.
 * **Log File Condensation:** Automatically condenses repetitive log entries before summarization, improving the quality of summaries for verbose log data.
 * **Code Summarization:** Generate summaries for code and Markdown files with an optional, configurable endpoint.
@@ -83,6 +84,30 @@ The API documentation will be available at `http://localhost:8000/docs`, featuri
 
 ## API Usage
 
+## Rate Limiting
+
+This application includes an in-memory rate limiter to prevent abuse of the API endpoints. This is particularly useful in a local setup to simulate production-like conditions and to prevent excessive resource usage. The rate limiter is enabled by default and can be configured using environment variables.
+
+### How It Works
+
+The rate limiter operates on a simple in-memory, per-client basis, identified by their IP address. For each endpoint, it tracks the timestamps of recent requests. When a new request arrives, it discards timestamps older than a configured time window and counts the remaining ones. If the count exceeds the allowed limit for that endpoint, the request is rejected with a `429 Too Many Requests` error.
+
+The limits are configured independently for each endpoint to match their expected usage:
+
+* **`/embed`:** Allows for more frequent requests as it is a less resource-intensive task.
+* **`/summarize`:** Has a stricter limit due to its higher computational cost.
+
+This in-memory approach is lightweight and suitable for a local setup, but it's important to note that the rate limiting data will be reset if the application restarts.
+
+### Configuration
+
+You can configure the rate limits by setting the following environment variables in your `.env` file:
+
+* `EMBED_RATE_LIMIT_SECONDS`
+* `EMBED_RATE_LIMIT_CALLS`
+* `SUMMARIZE_RATE_LIMIT_SECONDS`
+* `SUMMARIZE_RATE_LIMIT_CALLS`
+
 ### Embed File Content
 
 **Endpoint:** `POST /embed`
@@ -95,9 +120,9 @@ This endpoint uses a `multipart/form-data` request to handle file uploads. The f
 
 **Query Parameters:**
 
-*   `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
-*   `prompt_name`: Optional. The name of the prompt to use for the embedding model. This helps optimize the embedding for specific tasks (e.g., `query`, `document`, `clustering`). Defaults to `document`.
-*   `title`: Optional. A title for the uploaded content. This is particularly useful when `prompt_name` is set to `document`, as it helps the model generate more relevant embeddings by incorporating the document's title.
+* `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
+* `prompt_name`: Optional. The name of the prompt to use for the embedding model. This helps optimize the embedding for specific tasks (e.g., `query`, `document`, `clustering`). Defaults to `document`.
+* `title`: Optional. A title for the uploaded content. This is particularly useful when `prompt_name` is set to `document`, as it helps the model generate more relevant embeddings by incorporating the document's title.
 
 **Example Request (using curl):**
 
