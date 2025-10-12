@@ -85,7 +85,7 @@ class SummarizationModelWrapper:
         self.model = Llama.from_pretrained(
             repo_id=settings.SUMMARY_MODEL_NAME,
             filename=settings.SUMMARY_MODEL_BASENAME,
-            n_ctx=8192,
+            n_ctx=settings.SUMMARY_N_CTX,
             n_gpu_layers=-1,
         )
 

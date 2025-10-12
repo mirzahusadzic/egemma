@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
     SUMMARY_MAX_TOKEN: int = 300
     SUMMARY_TEMP: float = 0.2
+    SUMMARY_N_CTX: int = 8192
     EXTENSION_TO_LANGUAGE: dict[str, str] = {
         "py": "Python",
         "js": "JavaScript",
