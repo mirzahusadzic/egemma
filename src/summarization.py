@@ -23,12 +23,17 @@ def _get_persona_system_message(
         "personas", sanitized_persona_type, f"{sanitized_language}.md"
     )
     if not os.path.exists(persona_path):
+        logger.info(
+            f"Persona file not found for {sanitized_language} in "
+            f"{sanitized_persona_type}. Falling back to default persona."
+        )
         # Fallback to a default persona if a specific one doesn't exist
         persona_path = os.path.join("personas", persona_type, "default.md")
         if not os.path.exists(persona_path):
             raise FileNotFoundError(
                 f"No persona file found for {language} or default in {persona_type}"
             )
+    logger.info(f"Using persona file: {persona_path}")
 
     with open(persona_path, "r") as f:
         persona_content = f.read()
