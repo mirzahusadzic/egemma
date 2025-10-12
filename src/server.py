@@ -9,7 +9,6 @@ import fastapi_swagger_dark as fsd
 from fastapi import Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel
 
 from .config import settings
 from .embedding import SentenceTransformerWrapper
@@ -48,6 +47,23 @@ class EmbeddingDimensions(int, Enum):
     DIM_768 = 768
 
 
+class PromptNames(str, Enum):
+    QUERY = "query"
+    DOCUMENT = "document"
+    BITEXT_MINING = "BitextMining"
+    CLUSTERING = "Clustering"
+    CLASSIFICATION = "Classification"
+    INSTRUCTION_RETRIEVAL = "InstructionRetrieval"
+    MULTILABEL_CLASSIFICATION = "MultilabelClassification"
+    PAIR_CLASSIFICATION = "PairClassification"
+    RERANKING = "Reranking"
+    RETRIEVAL = "Retrieval"
+    RETRIEVAL_QUERY = "Retrieval-query"
+    RETRIEVAL_DOCUMENT = "Retrieval-document"
+    STS = "STS"
+    SUMMARIZATION = "Summarization"
+
+
 embedding_model_wrapper = SentenceTransformerWrapper()
 summarization_model_wrapper: SummarizationModelWrapper | None = None
 
@@ -75,12 +91,10 @@ app = fastapi.FastAPI(
 
 
 @lru_cache(maxsize=128)
-def cached_encode(text: str):
-    return embedding_model_wrapper.encode(text)
-
-
-class TextInput(BaseModel):
-    text: str
+def cached_encode(
+    text: str, prompt_name: Optional[str] = None, title: Optional[str] = None
+):
+    return embedding_model_wrapper.encode(text, prompt_name=prompt_name, title=title)
 
 
 async def swagger_ui_html(
@@ -98,22 +112,37 @@ DEFAULT_DIMENSIONS_QUERY = fastapi.Query(
     [EmbeddingDimensions.DIM_128], description="Select embedding dimensions"
 )
 
+DEFAULT_PROMPT_NAME_QUERY = fastapi.Query(
+    PromptNames.DOCUMENT, description="Select a prompt for the embedding model"
+)
+
 
 @app.post(
     "/embed",
-    summary="Embed Text",
-    description="Embeds a given text using the Gemma embedding 300m model "
-    "with Matryoshka support.",
+    summary="Embed File Content",
+    description=(
+        "Embeds the content of an uploaded file using the Gemma embedding 300m model "
+        "with Matryoshka support."
+    ),
     dependencies=[Depends(get_api_key)],
 )
 async def embed(
-    input: TextInput,
+    file: Annotated[UploadFile, File(...)],
     dimensions: Optional[List[EmbeddingDimensions]] = DEFAULT_DIMENSIONS_QUERY,
+    prompt_name: Optional[PromptNames] = DEFAULT_PROMPT_NAME_QUERY,
+    title: Optional[str] = Query(
+        None, description="Optional title for the embedded content."
+    ),
 ):
     if dimensions is None:
         dimensions = [EmbeddingDimensions.DIM_128]
     try:
-        embedding = await run_in_threadpool(cached_encode, input.text)
+        file_content_bytes = await file.read()
+        file_content = file_content_bytes.decode("utf-8")
+
+        embedding = await run_in_threadpool(
+            cached_encode, file_content, prompt_name, title
+        )
 
         if not dimensions:
             return {"embedding": embedding.tolist()}

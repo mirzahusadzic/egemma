@@ -4,7 +4,8 @@ This project provides a FastAPI application for embedding text using the [Gemma 
 
 ## Key Features
 
-* **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
+*   **Prompt Flexibility for Embeddings:** Utilize various prompt types (e.g., 'query', 'document', 'clustering') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.
+*   **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
 * **Local Gemma Embedding:** Utilize the powerful Gemma embedding 300m model directly on your local machine.
 * **Log File Condensation:** Automatically condenses repetitive log entries before summarization, improving the quality of summaries for verbose log data.
 * **Code Summarization:** Generate summaries for code and Markdown files with an optional, configurable endpoint.
@@ -82,41 +83,35 @@ The API documentation will be available at `http://localhost:8000/docs`, featuri
 
 ## API Usage
 
-### Embed Text
+### Embed File Content
 
 **Endpoint:** `POST /embed`
 **Authentication:** Bearer Token (using `WORKBENCH_API_KEY`)
-**Description:** Embeds a given text using the Gemma embedding 300m model with Matryoshka support.
+**Description:** Embeds the content of an uploaded file using the Gemma embedding 300m model with Matryoshka support.
 
 **Request Body:**
 
-```json
-{
-  "text": "Your input text here."
-}
-```
+This endpoint uses a `multipart/form-data` request to handle file uploads. The file should be sent under the `file` key.
 
 **Query Parameters:**
 
-* `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
+*   `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
+*   `prompt_name`: Optional. The name of the prompt to use for the embedding model. This helps optimize the embedding for specific tasks (e.g., `query`, `document`, `clustering`). Defaults to `document`.
+*   `title`: Optional. A title for the uploaded content. This is particularly useful when `prompt_name` is set to `document`, as it helps the model generate more relevant embeddings by incorporating the document's title.
 
 **Example Request (using curl):**
 
 ```bash
-curl -X POST "http://localhost:8000/embed?dimensions=128&dimensions=256" \
-     -H "Content-Type: application/json" \
+curl -X POST "http://localhost:8000/embed?dimensions=128&prompt_name=document&title=My%20Document%20Title" \
      -H "Authorization: Bearer your_api_key_here" \
-     -d '{
-       "text": "Hello, world!"
-     }'
+     -F 'file=@/path/to/your/document.txt'
 ```
 
 **Example Response:**
 
 ```json
 {
-  "embedding_128d": [...],
-  "embedding_256d": [...] 
+  "embedding_128d": [...]
 }
 ```
 
@@ -156,7 +151,3 @@ curl -X POST 'http://localhost:8000/summarize?max_tokens=1024&temperature=0.2&pe
   "summary": "This is a summary of the Python code."
 }
 ```
-
-## Roadmap
-
-* **Expand API Endpoints:** Explore adding specialized endpoints or parameters to leverage the various prompts supported by the `sentence_transformers` model (e.g., for query, document, clustering, reranking tasks).

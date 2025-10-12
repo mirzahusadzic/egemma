@@ -31,7 +31,36 @@ class SentenceTransformerWrapper:
         device = _get_optimal_device()
         self.model = SentenceTransformer("google/embeddinggemma-300m", device=device)
 
-    def encode(self, text: str):
+    def encode(
+        self, text: str, prompt_name: Optional[str] = None, title: Optional[str] = None
+    ):
         if self.model is None:
             raise RuntimeError("Model not loaded")
-        return self.model.encode(text)
+
+        if prompt_name == "document" and title:
+            # Format the text with the title for the 'document' prompt
+            formatted_text = f"title: {title} | text: {text}"
+        else:
+            formatted_text = text
+
+        return self.model.encode(formatted_text, prompt_name=prompt_name)
+
+    @property
+    def supported_prompts(self) -> list[str]:
+        # These are the prompts listed in the embeddinggemma model card
+        return [
+            "query",
+            "document",
+            "BitextMining",
+            "Clustering",
+            "Classification",
+            "InstructionRetrieval",
+            "MultilabelClassification",
+            "PairClassification",
+            "Reranking",
+            "Retrieval",
+            "Retrieval-query",
+            "Retrieval-document",
+            "STS",
+            "Summarization",
+        ]
