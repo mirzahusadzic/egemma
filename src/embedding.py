@@ -37,8 +37,11 @@ class SentenceTransformerWrapper:
         if self.model is None:
             raise RuntimeError("Model not loaded")
 
-        if prompt_name == "document" and title:
-            # Format the text with the title for the 'document' prompt
+        # A list of document-style prompts that benefit from having a title
+        prompts_with_title_support = ["document", "Retrieval-document"]
+
+        if prompt_name in prompts_with_title_support and title:
+            # Format the text with the title for prompts that support it
             formatted_text = f"title: {title} | text: {text}"
         else:
             formatted_text = text
