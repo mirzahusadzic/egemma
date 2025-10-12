@@ -154,7 +154,7 @@ This endpoint uses a `multipart/form-data` request to handle file uploads. The f
 
 * `max_tokens`: Optional. Maximum number of tokens for the summary. (e.g., `?max_tokens=512`)
 * `temperature`: Optional. Temperature for the summary generation. Lower values (e.g., `0.2`) make the output more deterministic, higher values (e.g., `0.8`) make it more creative. (e.g., `&temperature=0.7`)
-* `persona`: Optional. The name of the persona to use for summarization. This corresponds to a Markdown file in the `personas/code` or `personas/docs` directory (e.g., `developer`, `assistant`, `log_analyzer`). If not provided, a default persona will be used based on the file type.
+* `persona`: Optional. The name of the persona to use for summarization. This corresponds to a Markdown file in the `personas/code` or `personas/docs` directory (e.g., `developer`, `assistant`, `log_analyst`). If not provided, a default persona will be used based on the file type.
 
     **Note on `max_tokens` and Persona:** While `max_tokens` in the query parameter sets a hard limit on the generated output length, including `{max_tokens}` within your persona's system message (e.g., "Aim to summarize within {max_tokens} tokens.") can significantly improve the quality and coherence of the summary within that limit. The model uses this internal guidance to better plan and prioritize its output, even if the hard limit is eventually reached.
 
