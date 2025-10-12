@@ -127,7 +127,7 @@ DEFAULT_PROMPT_NAME_QUERY = fastapi.Query(
     dependencies=[Depends(get_api_key)],
 )
 async def embed(
-    file: Annotated[UploadFile, File(...)],
+    file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
     dimensions: Optional[List[EmbeddingDimensions]] = DEFAULT_DIMENSIONS_QUERY,
     prompt_name: Optional[PromptNames] = DEFAULT_PROMPT_NAME_QUERY,
     title: Optional[str] = Query(
@@ -155,7 +155,9 @@ async def embed(
 
         return result
     except Exception as e:
-        raise fastapi.HTTPException(status_code=500, detail=str(e)) from e
+        raise fastapi.HTTPException(
+            status_code=500, detail="An internal server error occurred."
+        ) from e
 
 
 @app.post(
@@ -166,7 +168,7 @@ async def embed(
     dependencies=[Depends(get_api_key)],
 )
 async def summarize(
-    file: Annotated[UploadFile, File(...)],
+    file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
     max_tokens: Optional[int] = Query(
         default=None, description="Maximum number of tokens for the summary."
     ),
@@ -223,7 +225,9 @@ async def summarize(
         return {"language": language, "summary": summary}
     except Exception as e:
         logger.error(f"Error during summarization: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(
+            status_code=500, detail="An internal server error occurred."
+        ) from e
 
 
 @app.get("/", tags=["Root"])

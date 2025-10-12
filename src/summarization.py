@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from functools import lru_cache
 from typing import Optional
 
@@ -14,7 +15,13 @@ def _get_persona_system_message(
     language: str, persona_type: str, max_tokens: int
 ) -> str:
     """Loads a persona system message from a Markdown file."""
-    persona_path = os.path.join("personas", persona_type, f"{language.lower()}.md")
+    # Sanitize inputs to prevent path traversal
+    sanitized_language = re.sub(r"[^a-zA-Z0-9_]", "", language.lower())
+    sanitized_persona_type = re.sub(r"[^a-zA-Z0-9_]", "", persona_type)
+
+    persona_path = os.path.join(
+        "personas", sanitized_persona_type, f"{sanitized_language}.md"
+    )
     if not os.path.exists(persona_path):
         # Fallback to a default persona if a specific one doesn't exist
         persona_path = os.path.join("personas", persona_type, "default.md")

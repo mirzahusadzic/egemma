@@ -241,7 +241,7 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency, tmp_path)
                 headers=headers,
             )
         assert response.status_code == 500, response.text
-        assert response.json() == {"detail": "Model not loaded"}
+        assert response.json() == {"detail": "An internal server error occurred."}
 
 
 def test_summarize_no_api_key(client, tmp_path):
@@ -285,7 +285,7 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
                 "/summarize", files={"file": ("test.py", f)}, headers=headers
             )
         assert response.status_code == 500, response.text
-        assert response.json() == {"detail": "Model not loaded"}
+        assert response.json() == {"detail": "An internal server error occurred."}
 
 
 def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
