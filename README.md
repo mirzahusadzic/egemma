@@ -1,25 +1,26 @@
-# FastAPI API with Gemma Models for Embedding and Summarization
+# FastAPI API with Gemma and Gemini Models
 
-This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google/models/gemma/embeddinggemma) with Matryoshka support, and for summarizing code, logs, and Markdown files. Summarization is powered by a [Gemma-based model](https://deepmind.google/models/gemma/gemma-3), which can be chosen from the Hugging Face repository to suit your needs, and leverages a persona feature for tailored summaries. It's designed to serve as a robust local server for integrating Gemma capabilities into your workflow via simple endpoints.
+This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google.com/models/gemma/embeddinggemma) and for summarizing content using either local Gemma models or the Gemini API. It's designed to serve as a robust local server for integrating powerful language model capabilities into your workflow via simple, secure endpoints.
 
 ## Key Features
 
-* **Rate Limiting:** Includes an in-memory rate limiter to prevent abuse of the API endpoints. This is particularly useful in a local setup to simulate production-like conditions and to prevent excessive resource usage. The rate limiter is enabled by default and can be configured using environment variables.
-* **Prompt Flexibility for Embeddings:** Utilize various prompt types (e.g., 'query', 'document', 'clustering') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.
-* **Intelligent Device Detection:** Automatically utilizes available hardware acceleration (CUDA for NVIDIA GPUs, MPS for Apple Silicon/AMD GPUs) with a graceful fallback to CPU.
-* **Local Gemma Embedding:** Utilize the powerful Gemma embedding 300m model directly on your local machine.
-* **Log File Condensation:** Automatically condenses repetitive log entries before summarization, improving the quality of summaries for verbose log data.
-* **Code Summarization:** Generate summaries for code and Markdown files with an optional, configurable endpoint.
-* **Sentence Caching:** Improves performance by caching embedding results for frequently requested texts using `lru_cache`.
-* **Bearer Token Authentication:** Secure your embedding endpoint with a configurable API key, ensuring only authorized access.
-* **Matryoshka Support:** Generate embeddings with various dimensions (128, 256, 512, 768) to suit different application needs.
-* **FastAPI Interface:** A user-friendly and high-performance API built with FastAPI, including automatic interactive documentation.
+| Feature                      | Description                                                                                                                                                                                          |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Dual Model Support**       | Choose between a local [Gemma-based model](https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-gguf) for full control or the powerful **Gemini API** for summarization, selectable via an API parameter. |
+| **Intelligent Device Detection** | Automatically utilizes available hardware acceleration (CUDA for NVIDIA, MPS for Apple/AMD) with a graceful fallback to CPU for local models.                                                        |
+| **Advanced Embeddings**      | Utilizes the Gemma embedding 300m model with Matryoshka support, allowing for variable dimensions (128, 256, 512, 768) to suit different needs.                                                          |
+| **Prompt Flexibility**       | Use various prompt types (e.g., 'query', 'document') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.                                               |
+| **Content Summarization**    | Generate summaries for code, logs, and Markdown files with support for custom personas (e.g., `developer`, `log_analyst`) to tailor the output.                                                         |
+| **Log File Condensation**    | Automatically condenses repetitive log entries before summarization, improving summary quality for verbose log data.                                                                                   |
+| **Performance Caching**      | Improves performance by caching embedding results for frequently requested texts using an LRU cache.                                                                                                   |
+| **Secure and Robust**        | Includes bearer token authentication to secure endpoints and an in-memory rate limiter to prevent abuse and manage resource usage effectively.                                                         |
+| **Modern API Interface**     | A high-performance API built with FastAPI, including automatic interactive documentation with a sleek dark theme.                                                                                        |
 
 ## Setup
 
 Follow these steps to set up the project locally:
 
-1. **Create (and optionally activate) Virtual Environment:**
+1. **Create Virtual Environment:**
     It is recommended to use `uv` for managing your Python environment.
 
     ```bash
@@ -28,143 +29,115 @@ Follow these steps to set up the project locally:
     ```
 
 2. **Install Dependencies:**
-
-    **Note on `llama-cpp-python` installation:**
-
-    >If you intend to use Metal (for Apple Silicon/AMD GPUs) or other specific hardware acceleration
-    for `llama-cpp-python`, you might need to install it separately with specific build flags
-    *before* running `uv pip install -r requirements.txt`. For example, for Metal support:
+    > **Note on `llama-cpp-python`:** For specific hardware acceleration (e.g., Metal for Apple Silicon), you may need to install `llama-cpp-python` with special flags *before* installing other requirements.
 
     ```bash
     CMAKE_ARGS="-DLLAMA_METAL=on" uv pip install llama-cpp-python --force-reinstall --no-cache-dir
     ```
 
-    Install the required Python packages:
+    **Install** the required Python packages:
 
     ```bash
     uv pip install -r requirements.txt
     ```
 
 3. **Environment Variables:**
-    Create a `.env` file in the root of the project. This file should contain your `WORKBENCH_API_KEY` and other optional settings.
+    Create a `.env` file in the project root. Add the following configurations:
 
-    ```bash
-    # --- Required --- 
+    ```env
+    # --- Required ---
     # For authenticating API requests
     WORKBENCH_API_KEY="your_api_key_here"
 
-    # --- Optional --- 
-    # For private models or to avoid rate limits (required for Gemma)
+    # --- Gemini API (Optional) ---
+    # Required if you want to use Gemini for summarization
+    GEMINI_API_KEY="your_google_ai_studio_api_key"
+
+    # --- Hugging Face (Optional) ---
+    # For private models or to avoid rate limits
     HF_TOKEN="your_huggingface_token_here"
 
-    # --- Summarization Settings --- 
+    # --- Summarization Settings ---
     # Set to false to disable the /summarize endpoint
     SUMMARY_ENABLED=true
-    # Hugging Face repository ID for the summarization model (default: google/gemma-3-12b-it-qat-q4_0-gguf)
+    # Default local model for summarization
     SUMMARY_MODEL_NAME="google/gemma-3-12b-it-qat-q4_0-gguf"
-    # Filename of the GGUF model within the repository (default: gemma-3-12b-it-q4_0.gguf)
     SUMMARY_MODEL_BASENAME="gemma-3-12b-it-q4_0.gguf"
-    # Maximum number of tokens for the summary (default: 300)
-    SUMMARY_MAX_TOKEN=1024
-    # Temperature for the summary generation (default: 0.2)
-    SUMMARY_TEMP=0.2
     ```
 
-    Replace `"your_api_key_here"` with your actual API key. This key will be used as a bearer token for authenticating requests to the `/embed` endpoint. If you are using private Hugging Face models or encountering rate limits, replace `"your_huggingface_token_here"` with your Hugging Face API token. Alternatively, you can log in via the Hugging Face CLI: `huggingface-cli login`.
+    * Replace placeholder values with your actual keys.
+    * You can obtain a `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 ## Running the Server
 
-To start the FastAPI server, run the following command:
+To start the FastAPI server, run:
 
 ```bash
-uv run uvicorn src.server:app --host localhost --port 8000
+uvicorn src.server:app --host localhost --port 8000
 ```
 
-The API documentation will be available at `http://localhost:8000/docs`, featuring a sleek dark theme.
+The interactive API documentation will be available at `http://localhost:8000/docs`.
 
 ## API Usage
 
-## Rate Limiting
+### Rate Limiting
 
-This application includes an in-memory rate limiter to prevent abuse of the API endpoints. This is particularly useful in a local setup to simulate production-like conditions and to prevent excessive resource usage. The rate limiter is enabled by default and can be configured using environment variables.
+The API includes an in-memory rate limiter to prevent abuse. It operates on a per-client IP basis and is configured separately for the `/embed` and `/summarize` endpoints. If the limit is exceeded, the API will respond with a `429 Too Many Requests` error.
 
-### How It Works
+### Endpoints
 
-The rate limiter operates on a simple in-memory, per-client basis, identified by their IP address. For each endpoint, it tracks the timestamps of recent requests. When a new request arrives, it discards timestamps older than a configured time window and counts the remaining ones. If the count exceeds the allowed limit for that endpoint, the request is rejected with a `429 Too Many Requests` error.
+#### Embed File Content
 
-The limits are configured independently for each endpoint to match their expected usage:
-
-* **`/embed`:** Allows for more frequent requests as it is a less resource-intensive task.
-* **`/summarize`:** Has a stricter limit due to its higher computational cost.
-
-This in-memory approach is lightweight and suitable for a local setup, but it's important to note that the rate limiting data will be reset if the application restarts.
-
-### Configuration
-
-You can configure the rate limits by setting the following environment variables in your `.env` file:
-
-* `EMBED_RATE_LIMIT_SECONDS`
-* `EMBED_RATE_LIMIT_CALLS`
-* `SUMMARIZE_RATE_LIMIT_SECONDS`
-* `SUMMARIZE_RATE_LIMIT_CALLS`
-
-### Embed File Content
-
-**Endpoint:** `POST /embed`
-**Authentication:** Bearer Token (using `WORKBENCH_API_KEY`)
-**Description:** Embeds the content of an uploaded file using the Gemma embedding 300m model with Matryoshka support.
-
-**Request Body:**
-
-This endpoint uses a `multipart/form-data` request to handle file uploads. The file should be sent under the `file` key.
+* **Endpoint:** `POST /embed`
+* **Authentication:** Bearer Token (`WORKBENCH_API_KEY`)
+* **Description:** Embeds file content using the Gemma 300m model with Matryoshka support.
 
 **Query Parameters:**
 
-* `dimensions`: Optional. A list of desired embedding dimensions. Valid values are `128`, `256`, `512`, `768`. If not provided, the `embedding_128d` will be returned.
-* `prompt_name`: Optional. The name of the prompt to use for the embedding model. This helps optimize the embedding for specific tasks (e.g., `query`, `document`, `clustering`). Defaults to `document`.
-* `title`: Optional. A title for the uploaded content. This is particularly useful when `prompt_name` is set to `document`, as it helps the model generate more relevant embeddings by incorporating the document's title.
+| Parameter     | Type      | Description                                                                                             |
+| ------------- | --------- | ------------------------------------------------------------------------------------------------------- |
+| `dimensions`  | `integer` | Optional. Embedding dimensions. Valid values: `128`, `256`, `512`, `768`. Defaults to `128`.              |
+| `prompt_name` | `string`  | Optional. Prompt type to optimize embeddings (`query`, `document`, `clustering`). Defaults to `document`. |
+| `title`       | `string`  | Optional. A title for the content, useful when `prompt_name` is `document`.                               |
 
-**Example Request (using curl):**
+**Example Request:**
 
 ```bash
-curl -X POST "http://localhost:8000/embed?dimensions=128&prompt_name=document&title=My%20Document%20Title" \
+curl -X POST "http://localhost:8000/embed?dimensions=128" \
      -H "Authorization: Bearer your_api_key_here" \
-     -F 'file=@/path/to/your/document.txt'
+     -F "file=@/path/to/your/document.txt"
 ```
 
-**Example Response:**
+#### Summarize Content
 
-```json
-{
-  "embedding_128d": [...]
-}
-```
-
-### Summarize Code, Markdown, or Log File
-
-**Endpoint:** `POST /summarize`
-**Authentication:** Bearer Token (using `WORKBENCH_API_KEY`)
-**Description:** Upload a code, Markdown, or log file and get a summary. Log files are automatically condensed before summarization. Summarization is guided by a configurable persona.
-
-**Request Body:**
-
-This endpoint uses a `multipart/form-data` request to handle file uploads. The file should be sent under the `file` key.
+* **Endpoint:** `POST /summarize`
+* **Authentication:** Bearer Token (`WORKBENCH_API_KEY`)
+* **Description:** Summarizes a code, Markdown, or log file using either a local Gemma model or the Gemini API.
 
 **Query Parameters:**
 
-* `max_tokens`: Optional. Maximum number of tokens for the summary. (e.g., `?max_tokens=512`)
-* `temperature`: Optional. Temperature for the summary generation. Lower values (e.g., `0.2`) make the output more deterministic, higher values (e.g., `0.8`) make it more creative. (e.g., `&temperature=0.7`)
-* `persona`: Optional. The name of the persona to use for summarization. This corresponds to a Markdown file in the `personas/code` or `personas/docs` directory (e.g., `developer`, `assistant`, `log_analyst`). If not provided, a default persona will be used based on the file type.
+| Parameter     | Type      | Description                                                                                                                                                           |
+| ------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model_name`  | `string`  | Optional. The model to use (e.g., `gemini-1.5-flash`). If omitted, the default local Gemma model is used.                                                                |
+| `persona`     | `string`  | Optional. The persona for summarization (`developer`, `assistant`, `log_analyst`). Defaults based on file type.                                                          |
+| `max_tokens`  | `integer` | Optional. Maximum number of tokens for the summary.                                                                                                                   |
+| `temperature` | `float`   | Optional. Generation temperature (e.g., `0.2` for deterministic, `0.8` for creative).                                                                                   |
 
-    **Note on `max_tokens` and Persona:** While `max_tokens` in the query parameter sets a hard limit on the generated output length, including `{max_tokens}` within your persona's system message (e.g., "Aim to summarize within {max_tokens} tokens.") can significantly improve the quality and coherence of the summary within that limit. The model uses this internal guidance to better plan and prioritize its output, even if the hard limit is eventually reached.
+> **Note on `max_tokens` and Persona:** While `max_tokens` in the query parameter sets a hard limit on the generated output length, including `{max_tokens}` within your persona's system message (e.g., "Aim to summarize within {max_tokens} tokens.") can significantly improve the quality and coherence of the summary within that limit. The model uses this internal guidance to better plan and prioritize its output, even if the hard limit is eventually reached.
 
-**Example Request (using curl):**
+**Example Request (using Gemini):**
 
 ```bash
-curl -X POST 'http://localhost:8000/summarize?max_tokens=1024&temperature=0.2&persona=developer' \
-  -H 'accept: application/json' \
+curl -X POST 'http://localhost:8000/summarize?model_name=gemini-2.5-flash&persona=developer' \
   -H 'Authorization: Bearer your_api_key_here' \
-  -H 'Content-Type: multipart/form-data' \
+  -F 'file=@/path/to/your/file.py'
+```
+
+**Example Request (using local Gemma):**
+
+```bash
+curl -X POST 'http://localhost:8000/summarize?persona=developer' \
+  -H 'Authorization: Bearer your_api_key_here' \
   -F 'file=@/path/to/your/file.py'
 ```
 
@@ -173,6 +146,6 @@ curl -X POST 'http://localhost:8000/summarize?max_tokens=1024&temperature=0.2&pe
 ```json
 {
   "language": "Python",
-  "summary": "This is a summary of the Python code."
+  "summary": "This is a summary of the Python code generated by the specified model."
 }
 ```

@@ -13,3 +13,4 @@ httpx
 pytest-mock
 llama-cpp-python
 python-multipart
+google-generativeai

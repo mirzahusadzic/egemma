@@ -204,6 +204,12 @@ async def summarize(
             "Persona to use for summarization (e.g., 'developer', 'assistant')."
         ),
     ),
+    model_name: Optional[str] = Query(
+        default=None,
+        description=(
+            "Name of the model to use for summarization (e.g., 'gemini-2.5-flash')."
+        ),
+    ),
 ):
     if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
         raise HTTPException(
@@ -242,6 +248,7 @@ async def summarize(
                 persona_name=persona_name,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                model_name=model_name,
             )
 
         summary = await run_in_threadpool(do_summarize)

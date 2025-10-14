@@ -4,6 +4,7 @@ import re
 from functools import lru_cache
 from typing import Optional
 
+import google.generativeai as genai
 from llama_cpp import Llama
 
 from .config import settings
@@ -90,6 +91,7 @@ def _cached_summarize(
 class SummarizationModelWrapper:
     def __init__(self):
         self.model: Optional[Llama] = None
+        self.gemini_client: Optional[genai.GenerativeModel] = None
 
     def load_model(
         self,
@@ -100,6 +102,69 @@ class SummarizationModelWrapper:
             n_ctx=settings.SUMMARY_N_CTX,
             n_gpu_layers=-1,
         )
+        if settings.GEMINI_API_KEY:
+            genai.configure(api_key=settings.GEMINI_API_KEY)
+            self.gemini_client = genai.GenerativeModel(settings.GEMINI_DEFAULT_MODEL)
+
+    def _gemini_summarize(
+        self,
+        content: str,
+        language: str = "code",
+        persona_name: str = "developer",
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        model_name: Optional[str] = None,
+    ) -> str:
+        if not self.gemini_client:
+            raise RuntimeError("Gemini client not initialized")
+
+        final_max_tokens = (
+            max_tokens if max_tokens is not None else settings.SUMMARY_MAX_TOKEN
+        )
+        final_temperature = (
+            temperature if temperature is not None else settings.SUMMARY_TEMP
+        )
+
+        persona_type = "docs" if language.lower() == "markdown" else "code"
+        system_msg = _get_persona_system_message(
+            persona_name, persona_type, final_max_tokens
+        )
+
+        messages = [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": system_msg},
+                    {"text": f"Here is the {language} content:\n\n{content}"},
+                ],
+            }
+        ]
+
+        # Use the specified model name if provided, otherwise use the default
+        model_to_use = model_name if model_name else settings.GEMINI_DEFAULT_MODEL
+
+        response = genai.GenerativeModel(model_to_use).generate_content(
+            messages,
+            generation_config=genai.types.GenerationConfig(
+                temperature=final_temperature,
+                max_output_tokens=final_max_tokens,
+            ),
+        )
+
+        if not response.candidates:
+            logger.warning(
+                f"Gemini model returned no candidates. Full response: {response}"
+            )
+            return "No summary could be generated (model returned no candidates)."
+
+        # Access the text from the first candidate's first part
+        if not response.candidates[0].content.parts:
+            logger.warning(
+                f"Gemini model returned no content parts. Full response: {response}"
+            )
+            return "No summary could be generated (model returned no content parts)."
+
+        return response.candidates[0].content.parts[0].text
 
     def summarize(
         self,
@@ -108,8 +173,18 @@ class SummarizationModelWrapper:
         persona_name: str = "developer",
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        model_name: Optional[str] = None,
     ) -> str:
-        if self.model is None:
+        if model_name and model_name.startswith("gemini"):
+            return self._gemini_summarize(
+                content,
+                language,
+                persona_name,
+                max_tokens,
+                temperature,
+                model_name,
+            )
+        elif self.model is None:
             raise RuntimeError("Model not loaded")
         return _cached_summarize(
             self.model, content, language, persona_name, max_tokens, temperature

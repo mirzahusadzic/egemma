@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     SUMMARY_MAX_TOKEN: int = 300
     SUMMARY_TEMP: float = 0.2
     SUMMARY_N_CTX: int = 8192
+    GEMINI_API_KEY: str | None = None
+    GEMINI_DEFAULT_MODEL: str = "gemini-2.5-flash"
+    GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
     EMBED_RATE_LIMIT_SECONDS: int = 10
     EMBED_RATE_LIMIT_CALLS: int = 5
     SUMMARIZE_RATE_LIMIT_SECONDS: int = 60
