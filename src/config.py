@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     WORKBENCH_API_KEY: str | None = None
+    EMBEDDING_MODEL_NAME: str = "google/embeddinggemma-300m"
     SUMMARY_ENABLED: bool = True
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
@@ -12,6 +13,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = None
     GEMINI_DEFAULT_MODEL: str = "gemini-2.5-flash"
     GEMINI_FLASH_MODEL: str = "gemini-2.5-flash"
+    GEMINI_API_TIMEOUT: int = 60
+    MAX_FILE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
+    BINARY_DETECTION_THRESHOLD: float = 0.1
+    CACHE_MAX_SIZE: int = 128
     EMBED_RATE_LIMIT_SECONDS: int = 10
     EMBED_RATE_LIMIT_CALLS: int = 5
     SUMMARIZE_RATE_LIMIT_SECONDS: int = 60

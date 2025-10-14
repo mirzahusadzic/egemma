@@ -295,7 +295,7 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency, tmp_path)
                 headers=headers,
             )
         assert response.status_code == 500, response.text
-        assert response.json() == {"detail": "An internal server error occurred."}
+        assert "Model not loaded" in response.json()["detail"]
 
 
 def test_summarize_no_api_key(client, tmp_path):
@@ -339,7 +339,7 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
                 "/summarize", files={"file": ("test.py", f)}, headers=headers
             )
         assert response.status_code == 500, response.text
-        assert response.json() == {"detail": "An internal server error occurred."}
+        assert "Model not loaded" in response.json()["detail"]
 
 
 def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
@@ -360,10 +360,10 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
     file_content = "def hello(): return 'world'  # Unique content for cache test"
     (tmp_path / "test.py").write_text(file_content)
 
-    # Clear the cache on the standalone function before the test
-    from src.summarization import _cached_summarize
+    # Clear the cache on the method before the test
+    from src.server import summarization_model_wrapper
 
-    _cached_summarize.cache_clear()
+    summarization_model_wrapper._summarize_local.cache_clear()
 
     # First call
     with open(tmp_path / "test.py", "rb") as f:

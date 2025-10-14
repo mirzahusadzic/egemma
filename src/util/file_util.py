@@ -1,7 +1,11 @@
 import string
 
+from ..config import settings
 
-def is_likely_binary(content_bytes: bytes, threshold: float = 0.1) -> bool:
+
+def is_likely_binary(
+    content_bytes: bytes, threshold: float = settings.BINARY_DETECTION_THRESHOLD
+) -> bool:
     """
     Checks if the given bytes content is likely binary using string.printable.
     A simple heuristic: if a significant portion of bytes are non-printable ASCII

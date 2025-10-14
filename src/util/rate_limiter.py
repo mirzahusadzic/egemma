@@ -1,3 +1,8 @@
+# This is a simple in-memory rate limiter. It is not suitable for production
+# environments with multiple workers (e.g., gunicorn with more than one worker).
+# For such cases, a more robust solution like a Redis-based rate limiter
+# would be required.
+
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, Request, status

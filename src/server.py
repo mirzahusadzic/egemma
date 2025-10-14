@@ -1,8 +1,9 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 from enum import Enum
 from functools import lru_cache
-from typing import Annotated, List, Optional
+from typing import Annotated, List
 
 import fastapi
 import fastapi_swagger_dark as fsd
@@ -30,7 +31,7 @@ async def get_api_key(
     if settings.WORKBENCH_API_KEY is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server configuration error.",
+            detail="Server configuration error: API key not set.",
         )
     if credentials.credentials != settings.WORKBENCH_API_KEY:
         raise HTTPException(
@@ -72,9 +73,25 @@ summarization_model_wrapper: SummarizationModelWrapper | None = None
 @asynccontextmanager
 async def lifespan(app: fastapi.FastAPI):
     """
-    Loads the models on application startup.
+    Loads the models on application startup and validates configuration.
     """
     global summarization_model_wrapper
+
+    # Validate API key configuration
+    if not settings.WORKBENCH_API_KEY:
+        logger.warning(
+            "WORKBENCH_API_KEY is not set. "
+            "Endpoints requiring authentication will fail."
+        )
+
+    # Validate persona paths
+    persona_dir = "personas"
+    if not os.path.exists(persona_dir) or not os.path.isdir(persona_dir):
+        raise RuntimeError(
+            f"Persona directory not found at '{persona_dir}'. Please create it."
+        )
+
+    # Load models
     embedding_model_wrapper.load_model()
     if settings.SUMMARY_ENABLED:
         summarization_model_wrapper = SummarizationModelWrapper()
@@ -92,10 +109,51 @@ app = fastapi.FastAPI(
 )
 
 
-@lru_cache(maxsize=128)
-def cached_encode(
-    text: str, prompt_name: Optional[str] = None, title: Optional[str] = None
-):
+@app.get("/health", summary="Health Check", tags=["Monitoring"])
+async def health_check():
+    """
+    Checks if the server and models are running.
+    """
+
+    response = {"status": "ok"}
+
+    # Check embedding model
+    embedding_status = {
+        "name": settings.EMBEDDING_MODEL_NAME,
+        "status": (
+            "loaded" if embedding_model_wrapper.model is not None else "not_loaded"
+        ),
+    }
+    response["embedding_model"] = embedding_status
+
+    # Check summarization model if enabled
+    if settings.SUMMARY_ENABLED:
+        summarization_status = {
+            "name": settings.SUMMARY_MODEL_NAME,
+            "basename": settings.SUMMARY_MODEL_BASENAME,
+            "status": (
+                "loaded"
+                if summarization_model_wrapper
+                and summarization_model_wrapper.model is not None
+                else "not_loaded"
+            ),
+        }
+        response["local_summarization_model"] = summarization_status
+    else:
+        response["local_summarization_model"] = {"status": "disabled"}
+
+    # Check Gemini API status
+    gemini_status = {
+        "api_key_set": bool(settings.GEMINI_API_KEY),
+        "default_model": settings.GEMINI_DEFAULT_MODEL,
+    }
+    response["gemini_api"] = gemini_status
+
+    return fastapi.responses.JSONResponse(content=response)
+
+
+@lru_cache(maxsize=settings.CACHE_MAX_SIZE)
+def cached_encode(text: str, prompt_name: str | None = None, title: str | None = None):
     return embedding_model_wrapper.encode(text, prompt_name=prompt_name, title=title)
 
 
@@ -137,10 +195,10 @@ DEFAULT_PROMPT_NAME_QUERY = fastapi.Query(
     ],
 )
 async def embed(
-    file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
-    dimensions: Optional[List[EmbeddingDimensions]] = DEFAULT_DIMENSIONS_QUERY,
-    prompt_name: Optional[PromptNames] = DEFAULT_PROMPT_NAME_QUERY,
-    title: Optional[str] = Query(
+    file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
+    dimensions: List[EmbeddingDimensions] | None = DEFAULT_DIMENSIONS_QUERY,
+    prompt_name: PromptNames | None = DEFAULT_PROMPT_NAME_QUERY,
+    title: str | None = Query(
         None, description="Optional title for the embedded content."
     ),
 ):
@@ -170,8 +228,9 @@ async def embed(
 
         return result
     except Exception as e:
+        logger.error(f"Error during embedding: {e}", exc_info=True)
         raise fastapi.HTTPException(
-            status_code=500, detail="An internal server error occurred."
+            status_code=500, detail=f"An internal server error occurred: {e}"
         ) from e
 
 
@@ -191,20 +250,20 @@ async def embed(
     ],
 )
 async def summarize(
-    file: Annotated[UploadFile, File(..., max_size=5 * 1024 * 1024)],
-    max_tokens: Optional[int] = Query(
+    file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
+    max_tokens: int | None = Query(
         default=None, description="Maximum number of tokens for the summary."
     ),
-    temperature: Optional[float] = Query(
+    temperature: float | None = Query(
         default=None, description="Temperature for the summary generation."
     ),
-    persona: Optional[str] = Query(
+    persona: str | None = Query(
         default=None,
         description=(
             "Persona to use for summarization (e.g., 'developer', 'assistant')."
         ),
     ),
-    model_name: Optional[str] = Query(
+    model_name: str | None = Query(
         default=None,
         description=(
             "Name of the model to use for summarization (e.g., 'gemini-2.5-flash')."
@@ -261,7 +320,7 @@ async def summarize(
     except Exception as e:
         logger.error(f"Error during summarization: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail="An internal server error occurred."
+            status_code=500, detail=f"An internal server error occurred: {e}"
         ) from e
 
 

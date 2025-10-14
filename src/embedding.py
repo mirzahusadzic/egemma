@@ -1,7 +1,9 @@
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import torch
+
+from src.config import settings
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -23,16 +25,16 @@ def _get_optimal_device() -> str:
 
 class SentenceTransformerWrapper:
     def __init__(self):
-        self.model: "Optional[SentenceTransformer]" = None
+        self.model: "SentenceTransformer | None" = None
 
     def load_model(self):
         from sentence_transformers import SentenceTransformer
 
         device = _get_optimal_device()
-        self.model = SentenceTransformer("google/embeddinggemma-300m", device=device)
+        self.model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME, device=device)
 
     def encode(
-        self, text: str, prompt_name: Optional[str] = None, title: Optional[str] = None
+        self, text: str, prompt_name: str | None = None, title: str | None = None
     ):
         if self.model is None:
             raise RuntimeError("Model not loaded")
