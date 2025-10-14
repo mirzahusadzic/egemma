@@ -20,7 +20,7 @@ Here are some of the standout features of this application:
 | **Prompt Flexibility**       | Use various prompt types (e.g., 'query', 'document') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.                                               |
 | **Content Summarization**    | Generate summaries for code, logs, and Markdown files with support for custom personas (e.g., `developer`, `log_analyst`) to tailor the output.                                                         |
 | **Log File Condensation**    | Automatically condenses repetitive log entries before summarization, improving summary quality for verbose log data.                                                                                   |
-| **Performance Caching**      | Improves performance by caching embedding results for frequently requested texts using an LRU cache.                                                                                                   |
+| **Performance Caching**      | Improves performance by caching embedding and summary results for frequently requested texts using an LRU cache.                                                                                                   |
 | **Secure and Robust**        | Includes bearer token authentication to secure endpoints and an in-memory rate limiter to prevent abuse, manage resource usage, and provide crucial cost protection when using paid APIs like Gemini. |
 | **Modern API Interface**     | A high-performance API built with FastAPI, including automatic interactive documentation with a sleek dark theme.                                                                                        |
 
@@ -126,7 +126,7 @@ curl -X POST "http://localhost:8000/embed?dimensions=128" \
 
 | Parameter     | Type      | Description                                                                                                                                                           |
 | ------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model_name`  | `string`  | Optional. The model to use (e.g., `gemini-1.5-flash`). If omitted, the default local Gemma model is used.                                                                |
+| `model_name`  | `string`  | Optional. The model to use (e.g., `gemini-2.5-flash`). If omitted, the default local Gemma model is used.                                                                |
 | `persona`     | `string`  | Optional. The persona for summarization (`developer`, `assistant`, `log_analyst`). Defaults based on file type.                                                          |
 | `max_tokens`  | `integer` | Optional. Maximum number of tokens for the summary.                                                                                                                   |
 | `temperature` | `float`   | Optional. Generation temperature (e.g., `0.2` for deterministic, `0.8` for creative).                                                                                   |

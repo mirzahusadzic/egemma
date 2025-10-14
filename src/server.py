@@ -30,7 +30,7 @@ async def get_api_key(
     if settings.WORKBENCH_API_KEY is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server configuration error: WORKBENCH_API_KEY not set.",
+            detail="Server configuration error.",
         )
     if credentials.credentials != settings.WORKBENCH_API_KEY:
         raise HTTPException(
