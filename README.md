@@ -1,19 +1,27 @@
 # FastAPI API with Gemma and Gemini Models
 
-This project provides a FastAPI application for embedding text using the [Gemma embedding 300m model](https://deepmind.google.com/models/gemma/embeddinggemma) and for summarizing content using either local Gemma models or the Gemini API. It's designed to serve as a robust local server for integrating powerful language model capabilities into your workflow via simple, secure endpoints.
+A high-performance FastAPI workbench that brings the power of Google's Gemma and Gemini models to your local machine. This application provides two core services through a secure and easy-to-use API:
+
+* **Advanced Text Embeddings:** Generate sophisticated text embeddings using the [Gemma embedding 300m model](https://deepmind.google.com/models/gemma/embeddinggemma), featuring Matryoshka support for variable dimensions (128-768) to tailor embeddings for diverse tasks.
+
+* **Intelligent Content Summarization:** Summarize code, logs, and documents using either a local [Gemma-based model](https://deepmind.google/models/gemma/gemma-3) for full control and privacy, or the powerful [Gemini API for text generation](https://ai.google.dev/gemini-api/docs/text-generation) for cutting-edge performance. Summaries can be tailored with different personas (`developer`, `log_analyst`, etc.) for context-aware results.
+
+Designed for robust local deployment, the server automatically detects and utilizes available hardware acceleration (NVIDIA CUDA, Apple/AMD MPS) and includes features like performance caching, rate limiting, and secure bearer token authentication. It's a powerful tool for integrating advanced language model capabilities into your local development workflow.
 
 ## Key Features
 
+Here are some of the standout features of this application:
+
 | Feature                      | Description                                                                                                                                                                                          |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Dual Model Support**       | Choose between a local [Gemma-based model](https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-gguf) for full control or the powerful **Gemini API** for summarization, selectable via an API parameter. |
+| **Multi-Model Support**      | Run up to three models simultaneously: a local Gemma for embeddings, and your choice of a local Gemma or the Gemini API for summarization. |
 | **Intelligent Device Detection** | Automatically utilizes available hardware acceleration (CUDA for NVIDIA, MPS for Apple/AMD) with a graceful fallback to CPU for local models.                                                        |
 | **Advanced Embeddings**      | Utilizes the Gemma embedding 300m model with Matryoshka support, allowing for variable dimensions (128, 256, 512, 768) to suit different needs.                                                          |
 | **Prompt Flexibility**       | Use various prompt types (e.g., 'query', 'document') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.                                               |
 | **Content Summarization**    | Generate summaries for code, logs, and Markdown files with support for custom personas (e.g., `developer`, `log_analyst`) to tailor the output.                                                         |
 | **Log File Condensation**    | Automatically condenses repetitive log entries before summarization, improving summary quality for verbose log data.                                                                                   |
 | **Performance Caching**      | Improves performance by caching embedding results for frequently requested texts using an LRU cache.                                                                                                   |
-| **Secure and Robust**        | Includes bearer token authentication to secure endpoints and an in-memory rate limiter to prevent abuse and manage resource usage effectively.                                                         |
+| **Secure and Robust**        | Includes bearer token authentication to secure endpoints and an in-memory rate limiter to prevent abuse, manage resource usage, and provide crucial cost protection when using paid APIs like Gemini. |
 | **Modern API Interface**     | A high-performance API built with FastAPI, including automatic interactive documentation with a sleek dark theme.                                                                                        |
 
 ## Setup
@@ -65,8 +73,8 @@ Follow these steps to set up the project locally:
     SUMMARY_MODEL_BASENAME="gemma-3-12b-it-q4_0.gguf"
     ```
 
-    * Replace placeholder values with your actual keys.
-    * You can obtain a `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/app/apikey).
+* Replace placeholder values with your actual keys.
+* You can obtain a `GEMINI_API_KEY` from [Google AI Studio](https://aistudio.google.com/app/apikey).
 
 ## Running the Server
 
@@ -82,7 +90,7 @@ The interactive API documentation will be available at `http://localhost:8000/do
 
 ### Rate Limiting
 
-The API includes an in-memory rate limiter to prevent abuse. It operates on a per-client IP basis and is configured separately for the `/embed` and `/summarize` endpoints. If the limit is exceeded, the API will respond with a `429 Too Many Requests` error.
+The API includes an in-memory rate limiter to prevent abuse and help manage costs when using paid services like the Gemini API. It operates on a per-client IP basis and is configured separately for the `/embed` and `/summarize` endpoints. If the limit is exceeded, the API will respond with a `429 Too Many Requests` error.
 
 ### Endpoints
 
