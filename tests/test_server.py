@@ -382,3 +382,70 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
 
     # Assert that the expensive model call was only made once
     mock_create_completion.assert_called_once()
+
+
+def test_parse_ast_python_success(client, mock_api_key_dependency, tmp_path):
+    headers = {"Authorization": "Bearer test_api_key"}
+    python_code = """
+import os
+from typing import List
+
+class MyClass:
+    def __init__(self):
+        pass
+
+    def my_method(self, arg1: int):
+        return arg1 * 2
+
+def my_function(param1, param2):
+    return param1 + param2
+"""
+    (tmp_path / "test_code.py").write_text(python_code)
+    with open(tmp_path / "test_code.py", "rb") as f:
+        response = client.post(
+            "/parse-ast",
+            files={"file": ("test_code.py", f)},
+            params={"language": "python"},
+            headers=headers,
+        )
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["language"] == "python"
+    assert "os" in json_response["imports"]
+    assert "typing" in json_response["imports"]
+    assert {"name": "MyClass", "methods": ["__init__", "my_method"]} in json_response[
+        "classes"
+    ]
+    assert {"name": "my_function", "params": ["param1", "param2"]} in json_response[
+        "functions"
+    ]
+
+
+def test_parse_ast_unsupported_language(client, mock_api_key_dependency, tmp_path):
+    headers = {"Authorization": "Bearer test_api_key"}
+    js_code = "console.log('hello');"
+    (tmp_path / "test.js").write_text(js_code)
+    with open(tmp_path / "test.js", "rb") as f:
+        response = client.post(
+            "/parse-ast",
+            files={"file": ("test.js", f)},
+            params={"language": "javascript"},
+            headers=headers,
+        )
+    assert response.status_code == 400
+    assert "Language 'javascript' not supported" in response.json()["detail"]
+
+
+def test_parse_ast_syntax_error(client, mock_api_key_dependency, tmp_path):
+    headers = {"Authorization": "Bearer test_api_key"}
+    invalid_python_code = "def func(:"
+    (tmp_path / "invalid.py").write_text(invalid_python_code)
+    with open(tmp_path / "invalid.py", "rb") as f:
+        response = client.post(
+            "/parse-ast",
+            files={"file": ("invalid.py", f)},
+            params={"language": "python"},
+            headers=headers,
+        )
+    assert response.status_code == 400
+    assert "Python syntax error" in response.json()["detail"]

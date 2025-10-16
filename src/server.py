@@ -1,3 +1,4 @@
+import ast
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -321,6 +322,89 @@ async def summarize(
         logger.error(f"Error during summarization: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal server error occurred: {e}"
+        ) from e
+
+
+async def get_file_upload(file: Annotated[UploadFile, File(...)]):
+    return file
+
+
+@app.post("/parse-ast", dependencies=[Depends(get_api_key)])
+async def parse_ast(
+    file: Annotated[UploadFile, Depends(get_file_upload)],
+    language: str = Query(...),
+):
+    """
+    Deterministic AST parsing endpoint for non-native languages.
+    Currently supports Python via the ast module.
+    """
+    if language != "python":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Language '{language}' not supported. "
+                "Currently only 'python' is available."
+            ),
+        )
+
+    # Read file content
+    content = await file.read()
+    code = content.decode("utf-8")
+
+    try:
+        # Parse Python AST
+        tree = ast.parse(code)
+
+        # Extract structural information
+        imports = []
+        classes = []
+        functions = []
+
+        for node in ast.walk(tree):
+            # Imports
+            if isinstance(node, ast.Import):
+                imports.extend([alias.name for alias in node.names])
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.append(node.module)
+
+            # Classes
+            elif isinstance(node, ast.ClassDef):
+                methods = [m.name for m in node.body if isinstance(m, ast.FunctionDef)]
+                classes.append({"name": node.name, "methods": methods})
+
+            # Functions (top-level only)
+            elif isinstance(node, ast.FunctionDef):
+                is_method = False
+                # A bit of a hacky way to check if a function is a method
+                for parent in ast.walk(tree):
+                    if hasattr(parent, "body") and isinstance(parent.body, list):
+                        for child in parent.body:
+                            if child == node and isinstance(parent, ast.ClassDef):
+                                is_method = True
+                                break
+                    if is_method:
+                        break
+                if not is_method:
+                    params = [arg.arg for arg in node.args.args]
+                    functions.append({"name": node.name, "params": params})
+
+        return {
+            "language": "python",
+            "imports": imports,
+            "classes": classes,
+            "functions": functions,
+            "exports": [],  # Python doesn't have explicit exports
+            "dependencies": imports,
+        }
+
+    except SyntaxError as e:
+        raise HTTPException(
+            status_code=400, detail=f"Python syntax error: {str(e)}"
+        ) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"AST parsing failed: {str(e)}"
         ) from e
 
 
