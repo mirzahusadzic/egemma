@@ -1,4 +1,3 @@
-import ast
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -8,8 +7,9 @@ from typing import Annotated, List
 
 import fastapi
 import fastapi_swagger_dark as fsd
-from fastapi import Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .config import settings
@@ -108,6 +108,14 @@ app = fastapi.FastAPI(
     docs_url=None,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(SyntaxError)
+async def syntax_error_exception_handler(request: Request, exc: SyntaxError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": f"Python syntax error: {str(exc)}"},
+    )
 
 
 @app.get("/health", summary="Health Check", tags=["Monitoring"])
@@ -251,26 +259,31 @@ async def embed(
     ],
 )
 async def summarize(
+    request: fastapi.Request,  # Add request object to access headers
     file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
-    max_tokens: int | None = Query(
+    max_tokens: int | None = fastapi.Form(
         default=None, description="Maximum number of tokens for the summary."
     ),
-    temperature: float | None = Query(
+    temperature: float | None = fastapi.Form(
         default=None, description="Temperature for the summary generation."
     ),
-    persona: str | None = Query(
+    persona: str | None = fastapi.Form(
         default=None,
         description=(
             "Persona to use for summarization (e.g., 'developer', 'assistant')."
         ),
     ),
-    model_name: str | None = Query(
+    model_name: str | None = fastapi.Form(
         default=None,
         description=(
             "Name of the model to use for summarization (e.g., 'gemini-2.5-flash')."
         ),
     ),
 ):
+    logger.info(
+        f"Received /summarize request. "
+        f"Content-Type: {request.headers.get('content-type')}"
+    )
     if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
         raise HTTPException(
             status_code=404, detail="Summarization feature is disabled."
@@ -318,22 +331,34 @@ async def summarize(
             summary = f"# Summary of Markdown File\n\n{summary}"
 
         return {"language": language, "summary": summary}
+    except HTTPException as e:
+        logger.error(
+            f"Summarization failed with HTTP Exception: {e.detail} "
+            f"(status: {e.status_code}) (file: {file.filename})",
+            exc_info=True,
+        )
+        raise e
     except Exception as e:
-        logger.error(f"Error during summarization: {e}", exc_info=True)
+        logger.error(
+            f"An internal server error occurred during summarization: {e} "
+            f"(file: {file.filename})",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=500, detail=f"An internal server error occurred: {e}"
         ) from e
 
 
-async def get_file_upload(file: Annotated[UploadFile, File(...)]):
-    return file
-
-
 @app.post("/parse-ast", dependencies=[Depends(get_api_key)])
 async def parse_ast(
-    file: Annotated[UploadFile, Depends(get_file_upload)],
-    language: str = Query(...),
+    request: fastapi.Request,  # Add request object to access headers
+    file: UploadFile,
+    language: str = fastapi.Form(...),
 ):
+    logger.info(
+        f"Received /parse-ast request. "
+        f"Content-Type: {request.headers.get('content-type')}"
+    )
     """
     Deterministic AST parsing endpoint for non-native languages.
     Currently supports Python via the ast module.
@@ -347,65 +372,13 @@ async def parse_ast(
             ),
         )
 
-    # Read file content
     content = await file.read()
     code = content.decode("utf-8")
 
-    try:
-        # Parse Python AST
-        tree = ast.parse(code)
+    from src.util.ast_parser import parse_code_to_ast
 
-        # Extract structural information
-        imports = []
-        classes = []
-        functions = []
-
-        for node in ast.walk(tree):
-            # Imports
-            if isinstance(node, ast.Import):
-                imports.extend([alias.name for alias in node.names])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imports.append(node.module)
-
-            # Classes
-            elif isinstance(node, ast.ClassDef):
-                methods = [m.name for m in node.body if isinstance(m, ast.FunctionDef)]
-                classes.append({"name": node.name, "methods": methods})
-
-            # Functions (top-level only)
-            elif isinstance(node, ast.FunctionDef):
-                is_method = False
-                # A bit of a hacky way to check if a function is a method
-                for parent in ast.walk(tree):
-                    if hasattr(parent, "body") and isinstance(parent.body, list):
-                        for child in parent.body:
-                            if child == node and isinstance(parent, ast.ClassDef):
-                                is_method = True
-                                break
-                    if is_method:
-                        break
-                if not is_method:
-                    params = [arg.arg for arg in node.args.args]
-                    functions.append({"name": node.name, "params": params})
-
-        return {
-            "language": "python",
-            "imports": imports,
-            "classes": classes,
-            "functions": functions,
-            "exports": [],  # Python doesn't have explicit exports
-            "dependencies": imports,
-        }
-
-    except SyntaxError as e:
-        raise HTTPException(
-            status_code=400, detail=f"Python syntax error: {str(e)}"
-        ) from e
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"AST parsing failed: {str(e)}"
-        ) from e
+    parsed_ast = parse_code_to_ast(code, language)
+    return parsed_ast
 
 
 @app.get("/", tags=["Root"])

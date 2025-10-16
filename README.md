@@ -136,17 +136,20 @@ curl -X POST "http://localhost:8000/embed?dimensions=128" \
 **Example Request (using Gemini):**
 
 ```bash
-curl -X POST 'http://localhost:8000/summarize?model_name=gemini-2.5-flash&persona=developer' \
-  -H 'Authorization: Bearer your_api_key_here' \
-  -F 'file=@/path/to/your/file.py'
+curl -X POST "http://localhost:8000/summarize" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -F "file=@/path/to/your/file.py" \
+  -F "model_name=gemini-2.5-flash" \
+  -F "persona=developer"
 ```
 
 **Example Request (using local Gemma):**
 
 ```bash
-curl -X POST 'http://localhost:8000/summarize?persona=developer' \
-  -H 'Authorization: Bearer your_api_key_here' \
-  -F 'file=@/path/to/your/file.py'
+curl -X POST "http://localhost:8000/summarize" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -F "file=@/path/to/your/file.py" \
+  -F "persona=developer"
 ```
 
 **Example Response:**
@@ -158,11 +161,113 @@ curl -X POST 'http://localhost:8000/summarize?persona=developer' \
 }
 ```
 
+#### Parse AST
+
+* **Endpoint:** `POST /parse-ast`
+* **Authentication:** Bearer Token (`WORKBENCH_API_KEY`)
+* **Description:** Parses a code file (currently Python only) and returns its Abstract Syntax Tree (AST) representation, including structural information like imports, classes, and functions with detailed metadata.
+
+**Form Data Parameters:**
+
+| Parameter  | Type     | Description                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`     | `file`   | The code file to parse.                                                                                                                                                                                                                                                                                                                                                       |
+| `language` | `string` | The programming language of the file (e.g., `python`).                                                                                                                                                                                                                                                                                                                        |
+
+**Example Request:**
+
+```bash
+curl -X POST "http://localhost:8000/parse-ast" \
+     -H "Authorization: Bearer your_api_key_here" \
+     -F "file=@/path/to/your/code.py" \
+     -F "language=python"
+```
+
+**Example Response (Python):**
+
+```json
+{
+  "language": "python",
+  "docstring": "A test module for parsing.",
+  "imports": [
+    "os",
+    "typing"
+  ],
+  "functions": [
+    {
+      "name": "my_function",
+      "docstring": "A standalone function.",
+      "params": [
+        {
+          "name": "param1",
+          "type": "None"
+        },
+        {
+          "name": "param2",
+          "type": "None"
+        }
+      ],
+      "returns": "int",
+      "decorators": [],
+      "is_async": false
+    }
+  ],
+  "classes": [
+    {
+      "name": "MyClass",
+      "docstring": "A simple example class.",
+      "base_classes": [],
+      "methods": [
+        {
+          "name": "__init__",
+          "docstring": "",
+          "params": [
+            {
+              "name": "self",
+              "type": "None"
+            }
+          ],
+          "returns": "None",
+          "decorators": [],
+          "is_async": false
+        },
+        {
+          "name": "my_method",
+          "docstring": "",
+          "params": [
+            {
+              "name": "self",
+              "type": "None"
+            },
+            {
+              "name": "arg1",
+              "type": "int"
+            }
+          ],
+          "returns": "int",
+          "decorators": [],
+          "is_async": false
+        }
+      ],
+      "decorators": []
+    }
+  ]
+}
+```
+
 #### Health Check
 
 * **Endpoint:** `GET /health`
 * **Authentication:** None
 * **Description:** Provides the current status of the API and its loaded models.
+
+**Example Response:**
+
+**Example Request:**
+
+```bash
+curl -X GET "http://localhost:8000/health"
+```
 
 **Example Response:**
 

@@ -386,39 +386,86 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
 
 def test_parse_ast_python_success(client, mock_api_key_dependency, tmp_path):
     headers = {"Authorization": "Bearer test_api_key"}
-    python_code = """
+    python_code = """\"\"\"A test module for parsing.\"\"\"
 import os
 from typing import List
 
 class MyClass:
+    \"\"\"A simple example class.\"\"\"
     def __init__(self):
         pass
 
-    def my_method(self, arg1: int):
+    def my_method(self, arg1: int) -> int:
         return arg1 * 2
 
-def my_function(param1, param2):
+def my_function(param1, param2) -> int:
+    \"\"\"A standalone function.\"\"\"
     return param1 + param2
 """
+    # Create a temporary file with the Python code
     (tmp_path / "test_code.py").write_text(python_code)
+
+    # Post the file to the endpoint
     with open(tmp_path / "test_code.py", "rb") as f:
         response = client.post(
             "/parse-ast",
-            files={"file": ("test_code.py", f)},
-            params={"language": "python"},
+            files={"file": ("test_code.py", f, "text/x-python-script")},
+            data={"language": "python"},
             headers=headers,
         )
+
     assert response.status_code == 200
     json_response = response.json()
+
+    # Assert top-level structure and imports
     assert json_response["language"] == "python"
+    assert json_response["docstring"] == "A test module for parsing."
     assert "os" in json_response["imports"]
     assert "typing" in json_response["imports"]
-    assert {"name": "MyClass", "methods": ["__init__", "my_method"]} in json_response[
-        "classes"
-    ]
-    assert {"name": "my_function", "params": ["param1", "param2"]} in json_response[
-        "functions"
-    ]
+
+    # Define the rich, detailed structure the API now returns
+    expected_class = {
+        "name": "MyClass",
+        "docstring": "A simple example class.",
+        "base_classes": [],
+        "decorators": [],
+        "methods": [
+            {
+                "name": "__init__",
+                "docstring": "",
+                "params": [{"name": "self", "type": "None"}],
+                "returns": "None",
+                "decorators": [],
+                "is_async": False,
+            },
+            {
+                "name": "my_method",
+                "docstring": "",
+                "params": [
+                    {"name": "self", "type": "None"},
+                    {"name": "arg1", "type": "int"},
+                ],
+                "returns": "int",
+                "decorators": [],
+                "is_async": False,
+            },
+        ],
+    }
+    assert expected_class in json_response["classes"]
+
+    # Define the rich, detailed structure for the standalone function
+    expected_function = {
+        "name": "my_function",
+        "docstring": "A standalone function.",
+        "params": [
+            {"name": "param1", "type": "None"},
+            {"name": "param2", "type": "None"},
+        ],
+        "returns": "int",
+        "decorators": [],
+        "is_async": False,
+    }
+    assert expected_function in json_response["functions"]
 
 
 def test_parse_ast_unsupported_language(client, mock_api_key_dependency, tmp_path):
@@ -428,12 +475,12 @@ def test_parse_ast_unsupported_language(client, mock_api_key_dependency, tmp_pat
     with open(tmp_path / "test.js", "rb") as f:
         response = client.post(
             "/parse-ast",
-            files={"file": ("test.js", f)},
-            params={"language": "javascript"},
+            files={"file": ("test.js", f, "text/plain")},
+            data={"language": "javascript"},
             headers=headers,
         )
-    assert response.status_code == 400
-    assert "Language 'javascript' not supported" in response.json()["detail"]
+        assert response.status_code == 400
+        assert "Language 'javascript' not supported" in response.json()["detail"]
 
 
 def test_parse_ast_syntax_error(client, mock_api_key_dependency, tmp_path):
@@ -443,9 +490,9 @@ def test_parse_ast_syntax_error(client, mock_api_key_dependency, tmp_path):
     with open(tmp_path / "invalid.py", "rb") as f:
         response = client.post(
             "/parse-ast",
-            files={"file": ("invalid.py", f)},
-            params={"language": "python"},
+            files={"file": ("invalid.py", f, "text/plain")},
+            data={"language": "python"},
             headers=headers,
         )
-    assert response.status_code == 400
-    assert "Python syntax error" in response.json()["detail"]
+        assert response.status_code == 400
+        assert "Python syntax error" in response.json()["detail"]
