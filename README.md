@@ -1,5 +1,9 @@
 # FastAPI API with Gemma and Gemini Models
 
+<div align="center" style="margin-top: 20px; margin-bottom: 20px;">
+<img src="./docs/assets/egemma-logo.png" alt="eGemma Logo" width="512"/>
+</div>
+
 A high-performance FastAPI workbench that brings the power of Google's Gemma and Gemini models to your local machine. This application provides two core services through a secure and easy-to-use API:
 
 * **Advanced Text Embeddings:** Generate sophisticated text embeddings using the [Gemma embedding 300m model](https://deepmind.google.com/models/gemma/embeddinggemma), featuring Matryoshka support for variable dimensions (128-768) to tailor embeddings for diverse tasks.
@@ -260,8 +264,6 @@ curl -X POST "http://localhost:8000/parse-ast" \
 * **Endpoint:** `GET /health`
 * **Authentication:** None
 * **Description:** Provides the current status of the API and its loaded models.
-
-**Example Response:**
 
 **Example Request:**
 
