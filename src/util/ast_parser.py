@@ -45,9 +45,11 @@ def parse_python_code(code: str):
 
     functions = []
     classes = []
+    exports = []
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            exports.append(node.name)
             # --- Extract detailed function info ---
             params = []
             # Align default values with parameters
@@ -74,6 +76,7 @@ def parse_python_code(code: str):
             )
 
         elif isinstance(node, ast.ClassDef):
+            exports.append(node.name)
             # --- Extract detailed class info ---
             methods = []
             for body_item in node.body:
@@ -112,6 +115,7 @@ def parse_python_code(code: str):
         "imports": imports,
         "functions": functions,
         "classes": classes,
+        "exports": exports,
     }
 
 
