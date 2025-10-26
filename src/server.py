@@ -270,13 +270,21 @@ async def summarize(
     persona: str | None = fastapi.Form(
         default=None,
         description=(
-            "Persona to use for summarization (e.g., 'developer', 'assistant')."
+            "Persona to use for summarization "
+            "(e.g., 'developer', 'assistant', 'security_validator')."
         ),
     ),
     model_name: str | None = fastapi.Form(
         default=None,
         description=(
             "Name of the model to use for summarization (e.g., 'gemini-2.5-flash')."
+        ),
+    ),
+    enable_safety: bool | None = fastapi.Form(
+        default=False,
+        description=(
+            "Enable Gemini safety settings for content filtering "
+            "(only applies to Gemini models)."
         ),
     ),
 ):
@@ -322,6 +330,7 @@ async def summarize(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 model_name=model_name,
+                enable_safety=enable_safety,
             )
 
         summary = await run_in_threadpool(do_summarize)

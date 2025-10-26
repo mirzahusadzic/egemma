@@ -71,6 +71,7 @@ class SummarizationModelWrapper:
         max_tokens: int | None = None,
         temperature: float | None = None,
         model_name: str | None = None,
+        enable_safety: bool = False,
     ) -> str:
         if model_name and model_name.startswith("gemini"):
             return self._summarize_gemini(
@@ -80,6 +81,7 @@ class SummarizationModelWrapper:
                 max_tokens,
                 temperature,
                 model_name,
+                enable_safety,
             )
         elif self.model is None:
             raise RuntimeError("Model not loaded")
@@ -136,6 +138,7 @@ class SummarizationModelWrapper:
         max_tokens: int | None,
         temperature: float | None,
         model_name: str | None,
+        enable_safety: bool = False,
     ) -> str:
         if not self.gemini_client:
             raise RuntimeError("Gemini client not initialized")
@@ -164,12 +167,33 @@ class SummarizationModelWrapper:
 
         model_to_use = model_name if model_name else settings.GEMINI_DEFAULT_MODEL
 
+        # Configure safety settings if enabled
+        safety_settings = None
+        if enable_safety:
+            from google.generativeai.types import HarmBlockThreshold, HarmCategory
+
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: (
+                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
+                ),
+                HarmCategory.HARM_CATEGORY_HARASSMENT: (
+                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
+                ),
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: (
+                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
+                ),
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: (
+                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
+                ),
+            }
+
         response = genai.GenerativeModel(model_to_use).generate_content(
             messages,
             generation_config=genai.types.GenerationConfig(
                 temperature=final_temperature,
                 max_output_tokens=final_max_tokens,
             ),
+            safety_settings=safety_settings,
             request_options={"timeout": settings.GEMINI_API_TIMEOUT},
         )
 
