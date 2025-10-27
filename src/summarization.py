@@ -3,7 +3,8 @@ import os
 import re
 from functools import lru_cache
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from llama_cpp import Llama
 
 from .config import settings
@@ -48,7 +49,7 @@ def _get_persona_system_message(
 class SummarizationModelWrapper:
     def __init__(self):
         self.model: Llama | None = None
-        self.gemini_client: genai.GenerativeModel | None = None
+        self.gemini_client: genai.Client | None = None
 
     def load_model(
         self,
@@ -60,8 +61,7 @@ class SummarizationModelWrapper:
             n_gpu_layers=-1,
         )
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.gemini_client = genai.GenerativeModel(settings.GEMINI_DEFAULT_MODEL)
+            self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
     def summarize(
         self,
@@ -155,47 +155,76 @@ class SummarizationModelWrapper:
             persona_name, persona_type, final_max_tokens, language
         )
 
-        messages = [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": system_msg},
-                    {"text": f"Here is the {language} content:\n\n{content}"},
-                ],
-            }
-        ]
-
         model_to_use = model_name if model_name else settings.GEMINI_DEFAULT_MODEL
 
         # Configure safety settings if enabled
         safety_settings = None
         if enable_safety:
-            from google.generativeai.types import HarmBlockThreshold, HarmCategory
+            safety_settings = [
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HATE_SPEECH",
+                    threshold="BLOCK_LOW_AND_ABOVE",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_HARASSMENT",
+                    threshold="BLOCK_LOW_AND_ABOVE",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    threshold="BLOCK_LOW_AND_ABOVE",
+                ),
+                types.SafetySetting(
+                    category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                    threshold="BLOCK_LOW_AND_ABOVE",
+                ),
+            ]
 
-            safety_settings = {
-                HarmCategory.HARM_CATEGORY_HATE_SPEECH: (
-                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
-                ),
-                HarmCategory.HARM_CATEGORY_HARASSMENT: (
-                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
-                ),
-                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: (
-                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
-                ),
-                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: (
-                    HarmBlockThreshold.BLOCK_LOW_AND_ABOVE
-                ),
-            }
-
-        response = genai.GenerativeModel(model_to_use).generate_content(
-            messages,
-            generation_config=genai.types.GenerationConfig(
-                temperature=final_temperature,
-                max_output_tokens=final_max_tokens,
-            ),
+        # Build config object
+        config = types.GenerateContentConfig(
+            temperature=final_temperature,
+            max_output_tokens=final_max_tokens,
+            system_instruction=system_msg,
             safety_settings=safety_settings,
-            request_options={"timeout": settings.GEMINI_API_TIMEOUT},
         )
+
+        # Generate content using new SDK with error handling
+        try:
+            response = self.gemini_client.models.generate_content(
+                model=model_to_use,
+                contents=f"Here is the {language} content:\n\n{content}",
+                config=config,
+            )
+        except Exception as e:
+            from google.genai import errors
+
+            # Handle specific Gemini API errors
+            if isinstance(e, errors.ClientError):
+                status_code = e.status_code
+                error_msg = str(e)
+
+                if status_code == 429:
+                    logger.warning(f"Gemini API quota exceeded: {error_msg}")
+                    return (
+                        "API quota exceeded. Please try again later or "
+                        "reduce request frequency. Check "
+                        "https://ai.google.dev/gemini-api/docs/rate-limits"
+                    )
+                elif status_code == 503:
+                    logger.warning(f"Gemini API unavailable: {error_msg}")
+                    return (
+                        "Gemini API is temporarily overloaded. "
+                        "Please try again in a few moments."
+                    )
+                else:
+                    logger.error(f"Gemini API error {status_code}: {error_msg}")
+                    return (
+                        f"API error ({status_code}): Unable to generate "
+                        "summary. Please try again."
+                    )
+            else:
+                # Unexpected error
+                logger.error(f"Unexpected error calling Gemini API: {e}")
+                return "An unexpected error occurred while generating the summary."
 
         if not response.candidates:
             logger.warning(

@@ -53,6 +53,8 @@ Follow these steps to set up the project locally:
     uv pip install -r requirements.txt
     ```
 
+    > **Note on Gemini SDK:** This project now uses the unified `google-genai` SDK (v0.3.0+) which provides full support for Gemini 2.5 models. The legacy `google-generativeai` SDK is deprecated and will reach end-of-life on August 31, 2025.
+
 3. **Environment Variables:**
     Create a `.env` file in the project root. Add the following configurations:
 
