@@ -12,6 +12,19 @@ A high-performance FastAPI workbench that brings the power of Google's Gemma and
 
 Designed for robust local deployment, the server automatically detects and utilizes available hardware acceleration (NVIDIA CUDA, Apple/AMD MPS) and includes features like performance caching, rate limiting, and secure bearer token authentication. It's a powerful tool for integrating advanced language model capabilities into your local development workflow.
 
+## Important Notice
+
+⚠️ **User Control and Responsibility**
+
+- **You choose which models to use**: Gemma (local) or Gemini (API) - neither is "officially recommended" or "more secure"
+- **Personas are provisional**: The included personas (`personas/`) are starting templates, user-controlled, and NOT officially endorsed
+- **No safety guarantees**: This workbench does NOT provide content filtering, safety checks, or ethical guardrails
+- **Your deployment, your responsibility**: How you configure and use this tool is entirely up to you
+
+See `personas/README.md` for details on persona usage and customization.
+
+**License**: MIT. NO WARRANTY. NO LIABILITY.
+
 ## Key Features
 
 Here are some of the standout features of this application:
