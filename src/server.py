@@ -335,10 +335,6 @@ async def summarize(
 
         summary = await run_in_threadpool(do_summarize)
 
-        # Wrap in Markdown formatting if it's a Markdown file
-        if language.lower() == "markdown":
-            summary = f"# Summary of Markdown File\n\n{summary}"
-
         return {"language": language, "summary": summary}
     except HTTPException as e:
         logger.error(
