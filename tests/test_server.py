@@ -29,8 +29,10 @@ def mock_api_key_dependency():
 
 
 @pytest.fixture
-def client():
+def client(monkeypatch):
     """Provides a TestClient with mocked models and disabled rate limiting."""
+    # Enable local summarization for tests
+    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
 
     async def allow_all_requests(request: Request):
         pass
@@ -73,11 +75,13 @@ def client():
 
 
 @pytest.fixture
-def caching_test_client():
+def caching_test_client(monkeypatch):
     """
     Provides a TestClient where the real summarization wrapper is used,
     but the expensive model calls are mocked.
     """
+    # Enable local summarization for tests
+    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
 
     async def allow_all_requests(request: Request):
         pass
