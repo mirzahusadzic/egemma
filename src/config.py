@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     EMBED_RATE_LIMIT_CALLS: int = 5
     SUMMARIZE_RATE_LIMIT_SECONDS: int = 60
     SUMMARIZE_RATE_LIMIT_CALLS: int = 2
+    FORCE_CPU: bool = False
     EXTENSION_TO_LANGUAGE: dict[str, str] = {
         "py": "Python",
         "js": "JavaScript",

@@ -90,6 +90,10 @@ Follow these steps to set up the project locally:
     # Default local model for summarization
     SUMMARY_MODEL_NAME="google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME="gemma-3-12b-it-q4_0.gguf"
+
+    # --- Hardware Acceleration (Optional) ---
+    # Force CPU usage for embeddings (useful for GPU compatibility issues)
+    FORCE_CPU=false
     ```
 
 * Replace placeholder values with your actual keys.

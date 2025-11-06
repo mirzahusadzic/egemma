@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_optimal_device() -> str:
+    if settings.FORCE_CPU:
+        logger.info("FORCE_CPU is enabled. Using CPU device.")
+        return "cpu"
     if torch.cuda.is_available():
         logger.info("CUDA is available. Using CUDA device.")
         return "cuda"

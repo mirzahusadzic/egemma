@@ -218,7 +218,7 @@ class SummarizationModelWrapper:
 
             # Handle specific Gemini API errors
             if isinstance(e, errors.ClientError):
-                status_code = e.status_code
+                status_code = e.code
                 error_msg = str(e)
 
                 if status_code == 429:
