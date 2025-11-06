@@ -94,9 +94,14 @@ async def lifespan(app: fastapi.FastAPI):
 
     # Load models
     embedding_model_wrapper.load_model()
-    if settings.SUMMARY_ENABLED:
-        summarization_model_wrapper = SummarizationModelWrapper()
-        summarization_model_wrapper.load_model()
+    # Always initialize summarization wrapper (for Gemini API support)
+    # but only load local model if SUMMARY_LOCAL_ENABLED is True
+    summarization_model_wrapper = SummarizationModelWrapper()
+    if settings.SUMMARY_LOCAL_ENABLED:
+        summarization_model_wrapper.load_local_model()
+    # Always try to initialize Gemini client if API key is present
+    if settings.GEMINI_API_KEY:
+        summarization_model_wrapper.load_gemini_client()
 
     yield
 
@@ -135,8 +140,8 @@ async def health_check():
     }
     response["embedding_model"] = embedding_status
 
-    # Check summarization model if enabled
-    if settings.SUMMARY_ENABLED:
+    # Check local summarization model if enabled
+    if settings.SUMMARY_LOCAL_ENABLED:
         summarization_status = {
             "name": settings.SUMMARY_MODEL_NAME,
             "basename": settings.SUMMARY_MODEL_BASENAME,
@@ -292,10 +297,21 @@ async def summarize(
         f"Received /summarize request. "
         f"Content-Type: {request.headers.get('content-type')}"
     )
-    if not settings.SUMMARY_ENABLED or summarization_model_wrapper is None:
+    if summarization_model_wrapper is None:
         raise HTTPException(
-            status_code=404, detail="Summarization feature is disabled."
+            status_code=500, detail="Summarization service not initialized."
         )
+
+    # Check if requesting local model when it's disabled
+    if model_name is None or not model_name.startswith("gemini"):
+        if not settings.SUMMARY_LOCAL_ENABLED:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Local summarization is disabled. Please specify a Gemini "
+                    "model (e.g., model_name='gemini-2.5-flash')."
+                ),
+            )
     try:
         code_bytes = await file.read()
         if is_likely_binary(code_bytes):

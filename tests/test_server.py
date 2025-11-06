@@ -55,7 +55,8 @@ def client():
         mock_embedding_encode.return_value = np.full(768, 0.1)
 
         mock_summarization_instance = MockSummarizationWrapper.return_value
-        mock_summarization_instance.load_model.return_value = None
+        mock_summarization_instance.load_local_model.return_value = None
+        mock_summarization_instance.load_gemini_client.return_value = None
         mock_summarization_instance.summarize.return_value = "This is a summary."
 
         # Now create TestClient, so lifespan runs with mocks active
@@ -342,16 +343,22 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
         assert "Model not loaded" in response.json()["detail"]
 
 
-def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "SUMMARY_ENABLED", False)
+def test_summarize_local_disabled(
+    client, mock_api_key_dependency, tmp_path, monkeypatch
+):
+    """Test that local summarization is disabled but Gemini can still be requested."""
+    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", False)
     headers = {"Authorization": "Bearer test_api_key"}
     (tmp_path / "test.py").write_text("def hello(): return 'world'")
+
+    # Test that local model request fails
     with open(tmp_path / "test.py", "rb") as f:
         response = client.post(
             "/summarize", files={"file": ("test.py", f)}, headers=headers
         )
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Summarization feature is disabled."}
+    assert response.status_code == 400
+    assert "Local summarization is disabled" in response.json()["detail"]
+    assert "Gemini model" in response.json()["detail"]
 
 
 def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_path):

@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     WORKBENCH_API_KEY: str | None = None
     EMBEDDING_MODEL_NAME: str = "google/embeddinggemma-300m"
-    SUMMARY_ENABLED: bool = True
+    SUMMARY_LOCAL_ENABLED: bool = True
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
     SUMMARY_MAX_TOKEN: int = 300

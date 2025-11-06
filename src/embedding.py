@@ -28,10 +28,18 @@ class SentenceTransformerWrapper:
         self.model: "SentenceTransformer | None" = None
 
     def load_model(self):
+        import os
+
         from sentence_transformers import SentenceTransformer
 
         device = _get_optimal_device()
-        self.model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME, device=device)
+
+        # Get HuggingFace token from environment
+        token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
+
+        self.model = SentenceTransformer(
+            settings.EMBEDDING_MODEL_NAME, device=device, token=token
+        )
 
     def encode(
         self, text: str, prompt_name: str | None = None, title: str | None = None

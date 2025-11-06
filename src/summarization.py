@@ -51,17 +51,31 @@ class SummarizationModelWrapper:
         self.model: Llama | None = None
         self.gemini_client: genai.Client | None = None
 
-    def load_model(
-        self,
-    ):
+    def load_local_model(self):
+        """Load the local Llama model for summarization."""
         self.model = Llama.from_pretrained(
             repo_id=settings.SUMMARY_MODEL_NAME,
             filename=settings.SUMMARY_MODEL_BASENAME,
             n_ctx=settings.SUMMARY_N_CTX,
             n_gpu_layers=-1,
         )
+        logger.info(f"Local summarization model loaded: {settings.SUMMARY_MODEL_NAME}")
+
+    def load_gemini_client(self):
+        """Initialize the Gemini API client."""
         if settings.GEMINI_API_KEY:
             self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            logger.info("Gemini API client initialized")
+        else:
+            logger.warning("GEMINI_API_KEY not set, Gemini client not initialized")
+
+    def load_model(self):
+        """Load both local model and Gemini client.
+
+        Deprecated: use load_local_model and load_gemini_client instead.
+        """
+        self.load_local_model()
+        self.load_gemini_client()
 
     def summarize(
         self,
@@ -73,6 +87,7 @@ class SummarizationModelWrapper:
         model_name: str | None = None,
         enable_safety: bool = False,
     ) -> str:
+        # If a Gemini model is explicitly requested, use Gemini
         if model_name and model_name.startswith("gemini"):
             return self._summarize_gemini(
                 content,
@@ -83,8 +98,12 @@ class SummarizationModelWrapper:
                 model_name,
                 enable_safety,
             )
+        # Otherwise, use the local model
         elif self.model is None:
-            raise RuntimeError("Model not loaded")
+            raise RuntimeError(
+                "Local summarization model not loaded. "
+                "Either enable SUMMARY_LOCAL_ENABLED or specify a Gemini model."
+            )
         return self._summarize_local(
             content, language, persona_name, max_tokens, temperature
         )

@@ -85,8 +85,8 @@ Follow these steps to set up the project locally:
     HF_TOKEN="your_huggingface_token_here"
 
     # --- Summarization Settings ---
-    # Set to false to disable the /summarize endpoint
-    SUMMARY_ENABLED=true
+    # Set to false to disable local summarization (Gemini API will still work)
+    SUMMARY_LOCAL_ENABLED=true
     # Default local model for summarization
     SUMMARY_MODEL_NAME="google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME="gemma-3-12b-it-q4_0.gguf"
