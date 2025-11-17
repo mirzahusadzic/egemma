@@ -448,6 +448,10 @@ def my_function(param1, param2) -> int:
                 "returns": "None",
                 "decorators": [],
                 "is_async": False,
+                "body_dependencies": {
+                    "instantiations": [],
+                    "method_calls": [],
+                },
             },
             {
                 "name": "my_method",
@@ -459,6 +463,10 @@ def my_function(param1, param2) -> int:
                 "returns": "int",
                 "decorators": [],
                 "is_async": False,
+                "body_dependencies": {
+                    "instantiations": [],
+                    "method_calls": [],
+                },
             },
         ],
     }
@@ -475,6 +483,10 @@ def my_function(param1, param2) -> int:
         "returns": "int",
         "decorators": [],
         "is_async": False,
+        "body_dependencies": {
+            "instantiations": [],
+            "method_calls": [],
+        },
     }
     assert expected_function in json_response["functions"]
 
