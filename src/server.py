@@ -123,6 +123,24 @@ async def syntax_error_exception_handler(request: Request, exc: SyntaxError):
     )
 
 
+@app.get("/rate-limits", summary="Rate Limits", tags=["Monitoring"])
+async def rate_limits():
+    """
+    Returns the current rate limit configuration.
+    Clients should query this endpoint on startup to configure their rate limiters.
+    """
+    return {
+        "embed": {
+            "calls": settings.EMBED_RATE_LIMIT_CALLS,
+            "seconds": settings.EMBED_RATE_LIMIT_SECONDS,
+        },
+        "summarize": {
+            "calls": settings.SUMMARIZE_RATE_LIMIT_CALLS,
+            "seconds": settings.SUMMARIZE_RATE_LIMIT_SECONDS,
+        },
+    }
+
+
 @app.get("/health", summary="Health Check", tags=["Monitoring"])
 async def health_check():
     """

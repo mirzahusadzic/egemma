@@ -16,10 +16,10 @@ Designed for robust local deployment, the server automatically detects and utili
 
 ⚠️ **User Control and Responsibility**
 
-- **You choose which models to use**: Gemma (local) or Gemini (API) - neither is "officially recommended" or "more secure"
-- **Personas are provisional**: The included personas (`personas/`) are starting templates, user-controlled, and NOT officially endorsed
-- **No safety guarantees**: This workbench does NOT provide content filtering, safety checks, or ethical guardrails
-- **Your deployment, your responsibility**: How you configure and use this tool is entirely up to you
+* **You choose which models to use**: Gemma (local) or Gemini (API) - neither is "officially recommended" or "more secure"
+* **Personas are provisional**: The included personas (`personas/`) are starting templates, user-controlled, and NOT officially endorsed
+* **No safety guarantees**: This workbench does NOT provide content filtering, safety checks, or ethical guardrails
+* **Your deployment, your responsibility**: How you configure and use this tool is entirely up to you
 
 See `personas/README.md` for details on persona usage and customization.
 
@@ -323,19 +323,48 @@ curl -X GET "http://localhost:8000/health"
 }
 ```
 
+#### Rate Limits
+
+* **Endpoint:** `GET /rate-limits`
+* **Authentication:** None
+* **Description:** Returns the current rate limit configuration. Clients can query this endpoint on startup to configure their rate limiters adaptively.
+
+**Example Request:**
+
+```bash
+curl -X GET "http://localhost:8000/rate-limits"
+```
+
+**Example Response:**
+
+```json
+{
+  "embed": {
+    "calls": 5,
+    "seconds": 10
+  },
+  "summarize": {
+    "calls": 2,
+    "seconds": 60
+  }
+}
+```
+
+This allows clients to respect the server's actual rate limits rather than relying on hardcoded values.
+
 ### Personas
 
 Personas are system prompts that guide the model's behavior for specific use cases. They are stored as Markdown files in the `personas/` directory:
 
-- **`personas/code/`** - For code summarization
-  - `developer.md` - General code understanding
-  - `log_analyst.md` - Log file analysis
-  - `structural_analyst.md` - Code structure analysis
-  - `sdet.md` - Test-focused analysis
+* **`personas/code/`** - For code summarization
+  * `developer.md` - General code understanding
+  * `log_analyst.md` - Log file analysis
+  * `structural_analyst.md` - Code structure analysis
+  * `sdet.md` - Test-focused analysis
 
-- **`personas/docs/`** - For document analysis
-  - `assistant.md` - General documentation
-  - `security_validator.md` - Security threat detection
+* **`personas/docs/`** - For document analysis
+  * `assistant.md` - General documentation
+  * `security_validator.md` - Security threat detection
 
 #### Security Validator Persona
 
@@ -348,7 +377,8 @@ The `security_validator` persona is designed for detecting malicious patterns in
 5. **Velocity Over Safety** - Speed emphasis suggesting skipped security measures
 
 **Response Format:**
-```
+
+```text
 THREAT ASSESSMENT: [SAFE | SUSPICIOUS | MALICIOUS]
 DETECTED PATTERNS: [List of patterns found]
 SPECIFIC CONCERNS: [Quoted suspicious phrases with context]
