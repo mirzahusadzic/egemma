@@ -37,7 +37,7 @@ class ChatModelWrapper:
             use_mmap=settings.CHAT_USE_MMAP,
             flash_attn=settings.CHAT_FLASH_ATTN,
             verbose=False,
-            # GPT-OSS uses Harmony format - let model's Jinja template handle it
+            # chat_format auto-detects from GGUF; Harmony parsing handled manually
         )
 
         logger.info(
@@ -94,31 +94,45 @@ class ChatModelWrapper:
     def _format_messages_with_tools(
         self, messages: list[dict], tools: list[dict] | None
     ) -> list[dict]:
-        """Format messages with tool definitions in system prompt."""
-        if not tools:
-            return messages
+        """Format messages with tool definitions and Harmony settings."""
+        # Build Harmony system prompt additions
+        harmony_header = self._build_harmony_header()
+        tool_prompt = self._build_tool_prompt(tools) if tools else ""
 
-        # Add tool definitions to system message
-        tool_prompt = self._build_tool_prompt(tools)
+        # Combine into suffix for system message
+        suffix_parts = [p for p in [harmony_header, tool_prompt] if p]
+        suffix = "\n\n".join(suffix_parts)
+
+        if not suffix:
+            return messages
 
         formatted = []
         has_system = False
 
         for msg in messages:
             if msg["role"] == "system":
-                # Append tool definitions to existing system message
+                # Append Harmony settings and tool definitions to system message
                 formatted.append(
-                    {"role": "system", "content": f"{msg['content']}\n\n{tool_prompt}"}
+                    {"role": "system", "content": f"{msg['content']}\n\n{suffix}"}
                 )
                 has_system = True
             else:
                 formatted.append(msg)
 
-        # If no system message, add one with tool definitions
+        # If no system message, add one with Harmony settings
         if not has_system:
-            formatted.insert(0, {"role": "system", "content": tool_prompt})
+            formatted.insert(0, {"role": "system", "content": suffix})
 
         return formatted
+
+    def _build_harmony_header(self) -> str:
+        """Build Harmony format header with reasoning effort."""
+        from datetime import datetime
+
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        reasoning_effort = settings.CHAT_REASONING_EFFORT
+
+        return f"Reasoning: {reasoning_effort}\nCurrent date: {current_date}"
 
     def _build_tool_prompt(self, tools: list[dict]) -> str:
         """Build tool description prompt for the model."""
@@ -130,14 +144,8 @@ class ChatModelWrapper:
                     f"- {func['name']}: {func.get('description', '')}\n"
                     f"  Parameters: {json.dumps(func.get('parameters', {}))}"
                 )
-
-        return (
-            "You have access to the following tools:\n\n"
-            + "\n\n".join(tool_descriptions)
-            + "\n\nTo use a tool, respond with a JSON object in this format:\n"
-            '{"tool_calls": [{"id": "call_xxx", "type": "function", '
-            '"function": {"name": "tool_name", "arguments": "{...}"}}]}\n\n'
-            "Only use tools when necessary. Respond normally for regular conversation."
+        return "You have access to the following tools:\n\n" + "\n\n".join(
+            tool_descriptions
         )
 
     def _batch_completion(
@@ -149,12 +157,17 @@ class ChatModelWrapper:
         include_thinking: bool = False,
     ) -> dict:
         """Generate a non-streaming completion."""
+        # Pass tools to llama.cpp so it can apply the Harmony template automatically
         response = self.model.create_chat_completion(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
-            # Don't stop on Harmony tokens - we need to parse them
-            stop=["<|im_end|>", "<|endoftext|>"],
+            tools=tools,  # Let llama.cpp apply the chat template with tools
+            stop=["<|return|>"],
+            stream=False,  # Batch mode, not streaming
+            min_p=0.0,
+            top_p=1.0,
+            top_k=0,
         )
 
         # Parse Harmony format response
@@ -173,6 +186,30 @@ class ChatModelWrapper:
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
 
+        # Get token counts from response
+        completion_tokens = response.get("usage", {}).get("completion_tokens", 0)
+
+        # If llama-cpp didn't provide token counts, estimate them
+        if completion_tokens == 0 and content:
+            completion_tokens = self._count_tokens(content)
+
+        # Determine finish_reason
+        # - tool_calls: model requested tool execution
+        # - length: max_tokens was reached
+        # - stop: normal completion
+        if tool_calls:
+            finish_reason = "tool_calls"
+        elif completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
+            finish_reason = "length"
+        else:
+            finish_reason = "stop"
+
+        prompt_tokens = response.get("usage", {}).get("prompt_tokens", 0)
+        if prompt_tokens == 0:
+            # Estimate prompt tokens if not provided
+            prompt_text = "".join(str(msg.get("content", "")) for msg in messages)
+            prompt_tokens = self._count_tokens(prompt_text)
+
         result = {
             "id": completion_id,
             "object": "chat.completion",
@@ -186,15 +223,13 @@ class ChatModelWrapper:
                         "content": content,
                         "tool_calls": tool_calls,
                     },
-                    "finish_reason": "tool_calls" if tool_calls else "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": {
-                "prompt_tokens": response.get("usage", {}).get("prompt_tokens", 0),
-                "completion_tokens": response.get("usage", {}).get(
-                    "completion_tokens", 0
-                ),
-                "total_tokens": response.get("usage", {}).get("total_tokens", 0),
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
             },
         }
 
@@ -217,17 +252,30 @@ class ChatModelWrapper:
 
         When include_thinking=True, emits thinking chunks first, then content chunks.
         Uses a buffered approach to properly parse Harmony format tokens.
+
+        OpenAI SDK Compatibility:
+        - Tracks token counts during streaming
+        - Includes `usage` object in the final chunk (required by @openai/agents SDK)
+        - Detects finish_reason="length" when max_tokens is reached
         """
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         created = int(time.time())
 
+        # Estimate prompt tokens from input messages
+        prompt_text = "".join(str(msg.get("content", "")) for msg in messages)
+        prompt_tokens = self._count_tokens(prompt_text)
+
+        # Pass tools to llama.cpp so it can apply the Harmony template automatically
         stream = self.model.create_chat_completion(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
-            # Don't stop on Harmony tokens - we need to parse them
-            stop=["<|im_end|>", "<|endoftext|>"],
+            tools=tools,  # Let llama.cpp apply the chat template with tools
+            stop=["<|return|>"],
             stream=True,
+            min_p=0.0,
+            top_p=1.0,
+            top_k=0,
         )
 
         # Track Harmony format state
@@ -235,7 +283,13 @@ class ChatModelWrapper:
         in_thinking = False
         in_final = False
         thinking_emitted = False
+        final_content_streamed = False
+        tool_prefix_emitted = False  # Track if we've emitted tool prefix
         buffer = ""
+
+        # Track completion tokens for final usage report
+        completion_tokens = 0
+        total_content_chars = 0
 
         for chunk in stream:
             delta = chunk["choices"][0].get("delta", {})
@@ -251,19 +305,76 @@ class ChatModelWrapper:
 
                 if harmony_detected:
                     # Harmony format parsing
-                    if "<|channel|>analysis<|message|>" in buffer and not in_thinking:
+                    # Check for full analysis marker including <|start|>assistant
+                    # prefix (per template line 292)
+                    if (
+                        "<|start|>assistant<|channel|>analysis<|message|>" in buffer
+                        or "<|channel|>analysis<|message|>" in buffer
+                    ) and not in_thinking:
                         in_thinking = True
-                        buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
+                        # Handle both full and partial markers for robustness
+                        if "<|start|>assistant<|channel|>analysis<|message|>" in buffer:
+                            buffer = buffer.split(
+                                "<|start|>assistant<|channel|>analysis<|message|>"
+                            )[-1]
+                        else:
+                            buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
 
-                    elif "<|channel|>final<|message|>" in buffer:
+                    # Check for final channel OR commentary channel (tool calls)
+                    # Tool calls: <|channel|>commentary to=functions.X ...
+                    # Only detect commentary transition if we're not already
+                    # in final state
+                    elif not in_final and (
+                        "<|channel|>final<|message|>" in buffer
+                        or (
+                            "<|channel|>commentary" in buffer
+                            and "<|message|>" in buffer
+                        )
+                    ):
+                        # Extract tool call prefix for commentary channel
+                        # IMPORTANT: Preserve full Harmony format for parser
+                        # Template line 297:
+                        # to=functions.{name}<|channel|>commentary json<|message|>{...}
+                        tool_prefix = ""
+                        if "<|channel|>commentary" in buffer:
+                            import re
+
+                            # Extract the FULL tool call prefix
+                            # (preserve all markers!)
+                            # NOTE: Model outputs REVERSED order from template!
+                            # Model: <|channel|>commentary to={name}
+                            #        <|constrain|>json<|message|>
+                            # Template: to=functions.{name}<|channel|>commentary
+                            #           json<|message|>
+                            match = re.search(
+                                r"(<\|channel\|>commentary\s+to=\s*[\w._]+\s*(?:<\|constrain\|>)?(?:json|code)?\s*<\|message\|>)",
+                                buffer,
+                            )
+                            if match:
+                                tool_prefix = match.group(1)
+
+                        # Determine which channel marker to split on
+                        if "<|channel|>final<|message|>" in buffer:
+                            split_marker = "<|channel|>final<|message|>"
+                        else:
+                            # For commentary, split on <|message|> after it
+                            split_marker = "<|message|>"
+
                         # Emit thinking before transitioning to final
                         if in_thinking and include_thinking and not thinking_emitted:
-                            thinking_content = buffer.split(
-                                "<|channel|>final<|message|>"
-                            )[0]
+                            thinking_content = buffer.split(split_marker)[0]
+                            # Clean up to just get the thinking part
+                            if "<|channel|>commentary" in thinking_content:
+                                thinking_content = thinking_content.split(
+                                    "<|channel|>commentary"
+                                )[0]
                             thinking_content = (
                                 thinking_content.replace("<|end|>", "")
                                 .replace("<|start|>", "")
+                                .replace("<|channel|>", "")
+                                .replace("<|call|>", "")
+                                .replace("<|message|>", "")
+                                .replace("assistant", "")
                                 .strip()
                             )
                             if thinking_content:
@@ -284,15 +395,64 @@ class ChatModelWrapper:
 
                         in_thinking = False
                         in_final = True
-                        buffer = buffer.split("<|channel|>final<|message|>")[-1]
+                        # Extract JSON part that comes after the tool prefix
+                        json_part = buffer.split(split_marker)[-1]
+                        # Prepend tool prefix for proper parsing later
+                        buffer = tool_prefix + json_part
+
+                        # Emit tool prefix immediately so it's included in output (ONCE)
+                        if tool_prefix and not tool_prefix_emitted:
+                            final_content_streamed = True
+                            tool_prefix_emitted = True  # Mark as emitted
+                            total_content_chars += len(tool_prefix)
+                            yield {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": created,
+                                "model": self.model_name,
+                                "choices": [
+                                    {
+                                        "index": 0,
+                                        "delta": {"content": tool_prefix},
+                                        "finish_reason": None,
+                                    }
+                                ],
+                            }
+
+                            # Also emit the JSON part that's already in the buffer
+                            if json_part:
+                                total_content_chars += len(json_part)
+                                yield {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": self.model_name,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": json_part},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                                # Clear the buffer since we've emitted everything
+                                buffer = ""
 
                     elif in_final:
                         # Stream final content, cleaning Harmony tokens
                         clean = content
-                        harmony_tokens = ["<|end|>", "<|start|>", "<|channel|>"]
-                        for tok in harmony_tokens + ["<|message|>"]:
+                        harmony_tokens = [
+                            "<|end|>",
+                            "<|start|>",
+                            "<|channel|>",
+                            "<|call|>",
+                            "<|message|>",
+                        ]
+                        for tok in harmony_tokens:
                             clean = clean.replace(tok, "")
                         if clean:
+                            final_content_streamed = True
+                            total_content_chars += len(clean)
                             yield {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -308,6 +468,7 @@ class ChatModelWrapper:
                             }
                 else:
                     # Non-Harmony: pass through as-is (OpenAI compatible)
+                    total_content_chars += len(content)
                     yield {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
@@ -337,6 +498,7 @@ class ChatModelWrapper:
                             ],
                         }
                     if parsed["content"] and parsed["content"] != buffer:
+                        total_content_chars += len(parsed["content"])
                         yield {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
@@ -351,22 +513,84 @@ class ChatModelWrapper:
                             ],
                         }
 
+                # Emit any remaining buffer content when in_final mode
+                # This handles tool calls that arrived in the same chunk as
+                # <|channel|>final<|message|> and weren't streamed yet
+                # Skip if we already streamed final content incrementally
+                if (
+                    harmony_detected
+                    and in_final
+                    and buffer
+                    and not final_content_streamed
+                ):
+                    # Clean Harmony tokens from buffer
+                    clean_buffer = buffer
+                    harmony_toks = [
+                        "<|end|>",
+                        "<|start|>",
+                        "<|channel|>",
+                        "<|call|>",
+                        "<|message|>",
+                    ]
+                    for tok in harmony_toks:
+                        clean_buffer = clean_buffer.replace(tok, "")
+                    clean_buffer = clean_buffer.strip()
+                    if clean_buffer:
+                        total_content_chars += len(clean_buffer)
+                        yield {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": self.model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": clean_buffer},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+
+                # Calculate completion tokens from content
+                completion_tokens = self._count_tokens_from_chars(total_content_chars)
+
+                # Detect finish_reason="length" when max_tokens is reached
+                # llama-cpp often returns "stop" even when hitting max_tokens
+                final_finish_reason = finish_reason
+                if completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
+                    final_finish_reason = "length"
+
+                # Yield final chunk with usage (OpenAI SDK requirement)
                 yield {
                     "id": completion_id,
                     "object": "chat.completion.chunk",
                     "created": created,
                     "model": self.model_name,
                     "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": finish_reason}
+                        {"index": 0, "delta": {}, "finish_reason": final_finish_reason}
                     ],
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens,
+                    },
                 }
 
     def _parse_tool_calls(self, content: str) -> list[dict] | None:
-        """Parse tool calls from model output."""
+        """
+        Parse tool calls from model output.
+
+        Supports two formats:
+        1. OpenAI JSON format: {"tool_calls": [...]}
+        2. GPT-OSS Harmony format: to=tool <name> json{...}
+
+        Returns OpenAI-compatible tool_calls array.
+        """
+        import re
+
+        # Format 1: Try to find JSON with tool_calls
         try:
-            # Try to find JSON with tool_calls
             if '"tool_calls"' in content:
-                # Extract JSON from content
                 start = content.find("{")
                 end = content.rfind("}") + 1
                 if start >= 0 and end > start:
@@ -375,6 +599,114 @@ class ChatModelWrapper:
                         return data["tool_calls"]
         except json.JSONDecodeError:
             pass
+
+        # Format 2: Parse GPT-OSS Harmony tool format
+        # NOTE: Model OUTPUT format differs from template INPUT format!
+        # Template (input): to=functions.{name}<|channel|>commentary
+        #                   json<|message|>{args}
+        # Model (output):   <|channel|>commentary to={name}
+        #                   <|constrain|>json<|message|>{args}
+        #
+        # Tool names can contain dots (e.g., container.exec) and underscores.
+        # Strip common prefixes like "functions." or "tool." from the name.
+        tool_pattern = (
+            # Model outputs commentary BEFORE to=
+            r"<\|channel\|>commentary\s+to=\s*([\w._]+)"
+            # Optional <|constrain|>
+            r"\s*(?:<\|constrain\|>)?(?:json|code)?\s*<\|message\|>\s*\{"
+        )
+
+        tool_calls = []
+        matches = list(re.finditer(tool_pattern, content, re.IGNORECASE))
+        for match in matches:
+            tool_name = match.group(1)
+            # Strip common prefixes (model outputs "to=functions.X" or "to=tool.X")
+            if tool_name.startswith("functions."):
+                tool_name = tool_name[10:]  # len("functions.") == 10
+            elif tool_name.startswith("tool."):
+                tool_name = tool_name[5:]  # len("tool.") == 5
+            json_start = match.end() - 1  # Position of opening brace
+
+            # Extract balanced JSON by counting braces
+            args_json = self._extract_balanced_json(content, json_start)
+            if args_json:
+                try:
+                    parsed = json.loads(args_json)
+                    # Handle nested format: {"id":..., "function":{...}}
+                    if isinstance(parsed, dict) and "function" in parsed:
+                        nested_func = parsed["function"]
+                        actual_name = nested_func.get("name", tool_name)
+                        actual_args = nested_func.get("arguments", "{}")
+                        # Strip prefixes from nested name too
+                        if actual_name.startswith("functions."):
+                            actual_name = actual_name[10:]
+                        elif actual_name.startswith("tool."):
+                            actual_name = actual_name[5:]
+                        tool_calls.append(
+                            {
+                                "id": parsed.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                                "type": "function",
+                                "function": {
+                                    "name": actual_name,
+                                    "arguments": (
+                                        actual_args
+                                        if isinstance(actual_args, str)
+                                        else json.dumps(actual_args)
+                                    ),
+                                },
+                            }
+                        )
+                    else:
+                        # Simple format: args_json is the actual arguments
+                        tool_calls.append(
+                            {
+                                "id": f"call_{uuid.uuid4().hex[:8]}",
+                                "type": "function",
+                                "function": {
+                                    "name": tool_name,
+                                    "arguments": args_json,
+                                },
+                            }
+                        )
+                except json.JSONDecodeError:
+                    continue
+
+        return tool_calls if tool_calls else None
+
+    def _extract_balanced_json(self, content: str, start: int) -> str | None:
+        """Extract a balanced JSON object starting at the given position."""
+        if start >= len(content) or content[start] != "{":
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+
+        for i in range(start, len(content)):
+            char = content[i]
+
+            if escape:
+                escape = False
+                continue
+
+            if char == "\\":
+                escape = True
+                continue
+
+            if char == '"' and not escape:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return content[start : i + 1]
+
         return None
 
     def _parse_harmony_response(self, content: str) -> dict:
@@ -389,6 +721,8 @@ class ChatModelWrapper:
             {"thinking": str | None, "content": str}
         """
         import re
+
+        logger.debug(f"[PARSE_HARMONY] Raw content: {content[:500]}")
 
         thinking = None
         final_content = content  # Fallback to raw content
@@ -410,7 +744,22 @@ class ChatModelWrapper:
         )
         if final_match:
             final_content = final_match.group(1).strip()
-        elif thinking:
+
+        # Extract commentary channel for tool calls
+        # NOTE: Model output format:
+        # <|channel|>commentary to={name} <|constrain|>json<|message|>{...}
+        # IMPORTANT: Preserve full Harmony format for _parse_tool_calls
+        if not final_match or not final_content:
+            commentary_match = re.search(
+                r"(<\|channel\|>commentary\s+to=\s*[\w._]+\s*(?:<\|constrain\|>)?(?:json|code)?\s*<\|message\|>\s*\{.*?)(?:<\|end\|>|<\|call\|>|$)",
+                content,
+                re.DOTALL,
+            )
+            if commentary_match:
+                # Preserve the FULL Harmony format including all markers
+                final_content = commentary_match.group(1).strip()
+
+        if not final_content and thinking:
             # If we found thinking but no final, the whole non-thinking part is content
             # This handles edge cases where model doesn't use final channel
             final_content = re.sub(
@@ -422,7 +771,37 @@ class ChatModelWrapper:
             # Clean any remaining Harmony tokens
             final_content = re.sub(r"<\|[^|]+\|>", "", final_content).strip()
 
+        logger.debug(
+            f"[PARSE_HARMONY] Extracted - thinking: {bool(thinking)}, "
+            f"content: {final_content[:200] if final_content else 'None'}"
+        )
         return {"thinking": thinking, "content": final_content or content}
+
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count tokens in text using the model's tokenizer.
+
+        Uses llama-cpp-python's tokenizer for accurate token counts.
+        Falls back to character-based estimation if model not loaded.
+        """
+        if self.model is None:
+            return self._count_tokens_from_chars(len(text))
+
+        try:
+            tokens = self.model.tokenize(text.encode("utf-8"))
+            return len(tokens)
+        except Exception:
+            # Fallback to estimation
+            return self._count_tokens_from_chars(len(text))
+
+    def _count_tokens_from_chars(self, char_count: int) -> int:
+        """
+        Estimate token count from character count.
+
+        Uses a ratio of ~4 characters per token (common for English text).
+        This is a rough estimate when tokenizer is not available.
+        """
+        return max(1, char_count // 4)
 
     @property
     def is_loaded(self) -> bool:

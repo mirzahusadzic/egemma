@@ -142,13 +142,17 @@ def test_stream_completion():
 
 
 def test_format_messages_with_tools_no_tools():
-    """Test message formatting without tools."""
+    """Test message formatting without tools adds Harmony header."""
     wrapper = ChatModelWrapper()
     messages = [{"role": "user", "content": "Hello"}]
 
     result = wrapper._format_messages_with_tools(messages, None)
 
-    assert result == messages
+    # Harmony header is always added (reasoning effort + date)
+    assert len(result) == 2
+    assert result[0]["role"] == "system"
+    assert "Reasoning:" in result[0]["content"]
+    assert result[1] == messages[0]
 
 
 def test_format_messages_with_tools_existing_system():
@@ -218,7 +222,7 @@ def test_build_tool_prompt():
     assert "Get current weather" in result
     assert "search" in result
     assert "Search the web" in result
-    assert "tool_calls" in result
+    assert "tools" in result  # Just lists available tools
 
 
 def test_parse_tool_calls_valid():
@@ -292,3 +296,185 @@ def test_completion_default_values():
         call_args = wrapper.model.create_chat_completion.call_args
         assert call_args.kwargs["max_tokens"] == 2048
         assert call_args.kwargs["temperature"] == 0.5
+
+
+def test_stream_completion_with_harmony_format():
+    """Test streaming with Harmony format (analysis + final channels)."""
+    wrapper = ChatModelWrapper()
+    wrapper.model = MagicMock()
+
+    # Mock Harmony format streaming response
+    mock_chunks = [
+        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "analysis"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "Thinking..."}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|end|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "final"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "Hello!"}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+
+    result = wrapper.create_completion(
+        messages=[{"role": "user", "content": "Hi"}],
+        stream=True,
+        include_thinking=True,
+    )
+
+    chunks = list(result)
+    # Should have thinking chunk, content chunk, and final chunk
+    assert len(chunks) >= 2
+
+    # Find thinking and content chunks
+    thinking_chunks = [c for c in chunks if "thinking" in c["choices"][0]["delta"]]
+
+    assert len(thinking_chunks) >= 1
+    assert "Thinking" in thinking_chunks[0]["choices"][0]["delta"]["thinking"]
+
+
+def test_stream_completion_with_tool_calls_harmony():
+    """Test streaming with Harmony tool call format (commentary channel)."""
+    wrapper = ChatModelWrapper()
+    wrapper.model = MagicMock()
+
+    # Mock Harmony format with commentary channel for tool calls
+    mock_chunks = [
+        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "analysis"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "Use tool"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|end|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "commentary"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {"delta": {"content": " to=functions.bash"}, "finish_reason": None}
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"content": " <|constrain|>json"}, "finish_reason": None}
+            ]
+        },
+        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": '{"cmd":'}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": '"ls"}'}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+
+    result = wrapper.create_completion(
+        messages=[{"role": "user", "content": "List files"}],
+        stream=True,
+        include_thinking=True,
+    )
+
+    chunks = list(result)
+
+    # Find content chunks - should include tool prefix
+    content_chunks = [
+        c
+        for c in chunks
+        if "content" in c["choices"][0]["delta"] and c["choices"][0]["delta"]["content"]
+    ]
+
+    # Concatenate all content
+    full_content = "".join(c["choices"][0]["delta"]["content"] for c in content_chunks)
+
+    # Should contain tool prefix and JSON
+    assert "to=functions.bash" in full_content
+    assert "json" in full_content
+    assert '{"cmd":' in full_content or '"ls"}' in full_content
+
+
+def test_parse_tool_calls_harmony_format():
+    """Test parsing Harmony format tool calls."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>commentary to=functions.bash "
+        '<|constrain|>json<|message|>{"command":"echo hello"}'
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "bash"
+    assert "echo hello" in result[0]["function"]["arguments"]
+
+
+def test_parse_tool_calls_harmony_format_with_dot():
+    """Test parsing Harmony tool calls with dotted names (container.exec)."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>commentary to=container.exec "
+        '<|constrain|>json<|message|>{"cmd":"ls -la"}'
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "container.exec"
+
+
+def test_parse_harmony_response_with_final():
+    """Test parsing Harmony response with final channel."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>analysis<|message|>Thinking here<|end|>"
+        "<|channel|>final<|message|>Final answer<|end|>"
+    )
+
+    result = wrapper._parse_harmony_response(content)
+
+    assert result["thinking"] == "Thinking here"
+    assert result["content"] == "Final answer"
+
+
+def test_parse_harmony_response_with_commentary():
+    """Test parsing Harmony response with commentary channel (tool calls)."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>analysis<|message|>Need to call tool<|end|>"
+        "<|start|>assistant<|channel|>commentary to=bash "
+        '<|constrain|>json<|message|>{"cmd":"ls"}<|end|>'
+    )
+
+    result = wrapper._parse_harmony_response(content)
+
+    assert result["thinking"] == "Need to call tool"
+    # Content should have the tool call JSON after cleaning
+    assert "cmd" in result["content"] or "bash" in result["content"]
+
+
+def test_stream_no_duplicate_content():
+    """Test that streamed content isn't duplicated at finish."""
+    wrapper = ChatModelWrapper()
+    wrapper.model = MagicMock()
+
+    # Simple non-Harmony streaming
+    mock_chunks = [
+        {"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": " world"}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+    ]
+    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+
+    result = wrapper.create_completion(
+        messages=[{"role": "user", "content": "Hi"}],
+        stream=True,
+    )
+
+    chunks = list(result)
+    content_chunks = [
+        c["choices"][0]["delta"].get("content", "")
+        for c in chunks
+        if c["choices"][0]["delta"].get("content")
+    ]
+
+    # Should have exactly "Hello" and " world", no duplicates
+    assert content_chunks == ["Hello", " world"]

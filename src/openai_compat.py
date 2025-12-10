@@ -151,6 +151,8 @@ class ChatCompletionChunk(BaseModel):
     created: int
     model: str
     choices: list[StreamChoice]
+    # Usage is included in the final chunk (OpenAI SDK requirement)
+    usage: Usage | None = None
 
 
 # --- Models Endpoint ---

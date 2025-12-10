@@ -2,44 +2,42 @@
 
 Complete API documentation for all eGemma endpoints.
 
-**Base URL:** `http://localhost:8000`
-**Authentication:** Bearer token via `Authorization: Bearer <WORKBENCH_API_KEY>`
+- **Base URL:** `http://localhost:8000`
+- **Authentication:** Bearer token via `Authorization: Bearer <WORKBENCH_API_KEY>`
 
 ---
 
-## Chat Completions
+## Responses API (OpenAI Agent SDK)
 
-### POST /v1/chat/completions
+### POST /v1/responses
 
-OpenAI-compatible chat completions with GPT-OSS-20B.
+The primary endpoint for agentic workflows. Fully compatible with the OpenAI Agent SDK (`@openai/agents`).
 
 **Request Body:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `model` | string | Yes | Model name (`gpt-oss-20b`) |
-| `messages` | array | Yes | Array of `{role, content}` objects |
-| `max_tokens` | integer | No | Max tokens to generate (default: 4096) |
-| `temperature` | float | No | Sampling temperature 0.0-2.0 (default: 0.7) |
+| `input` | string/array | Yes | User input (string or array of input items) |
+| `instructions` | string | No | System instructions |
+| `max_output_tokens` | integer | No | Max tokens to generate (default: 4096) |
+| `temperature` | float | No | Sampling temperature 0.0-2.0 (default: 1.0) |
+| `reasoning_effort` | string | No | Thinking depth: low, medium, high (default: high) |
 | `stream` | boolean | No | Enable SSE streaming (default: false) |
 | `tools` | array | No | Tool definitions for function calling |
 | `tool_choice` | string/object | No | Tool selection mode |
-| `include_thinking` | boolean | No | Include reasoning traces (default: false) |
+| `previous_response_id` | string | No | Continue from previous response |
 
-**Example:**
+**Example (Non-streaming):**
 
 ```bash
-curl -X POST "http://localhost:8000/v1/chat/completions" \
+curl -X POST "http://localhost:8000/v1/responses" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-oss-20b",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "Explain quantum computing."}
-    ],
-    "max_tokens": 500,
-    "temperature": 0.7
+    "input": "What is 2 + 2?",
+    "instructions": "You are a helpful math assistant."
   }'
 ```
 
@@ -47,152 +45,195 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 ```json
 {
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1234567890,
+  "id": "resp_abc123def456",
+  "object": "response",
+  "created_at": 1234567890,
   "model": "gpt-oss-20b",
-  "choices": [{
-    "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": "Quantum computing uses qubits...",
-      "tool_calls": null
+  "status": "completed",
+  "output": [
+    {
+      "id": "rs_xyz789",
+      "type": "reasoning",
+      "summary": [{"type": "summary_text", "text": "Simple arithmetic..."}]
     },
-    "finish_reason": "stop"
-  }],
+    {
+      "id": "msg_abc123",
+      "type": "message",
+      "role": "assistant",
+      "status": "completed",
+      "content": [{"type": "output_text", "text": "2 + 2 = 4"}]
+    }
+  ],
+  "output_text": "2 + 2 = 4",
   "usage": {
-    "prompt_tokens": 25,
-    "completion_tokens": 150,
-    "total_tokens": 175
+    "input_tokens": 25,
+    "output_tokens": 10,
+    "total_tokens": 35
   }
 }
 ```
 
-**Streaming:**
+**Example with Tools:**
 
 ```bash
-curl -X POST "http://localhost:8000/v1/chat/completions" \
+curl -X POST "http://localhost:8000/v1/responses" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-oss-20b", "messages": [...], "stream": true}'
+  -d '{
+    "model": "gpt-oss-20b",
+    "input": "List files in /tmp",
+    "tools": [{
+      "type": "function",
+      "name": "bash",
+      "description": "Execute bash command",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string", "description": "Command to run"}
+        },
+        "required": ["command"]
+      }
+    }]
+  }'
 ```
 
-Returns Server-Sent Events (SSE) with `data: {chunk}` format.
-
-**Extended Thinking:**
-
-When `include_thinking: true`, responses include reasoning traces:
+**Tool Call Response:**
 
 ```json
 {
-  "choices": [{
-    "message": {
-      "content": "2 + 2 = 4",
-      "thinking": "User asks for basic arithmetic. 2 + 2 equals 4."
+  "id": "resp_abc123",
+  "output": [
+    {
+      "id": "msg_xyz",
+      "type": "function_call",
+      "call_id": "call_abc123",
+      "name": "bash",
+      "arguments": "{\"command\":\"ls /tmp\"}",
+      "status": "completed"
     }
-  }]
+  ],
+  "output_text": "",
+  "status": "completed"
 }
 ```
+
+### Streaming
+
+Enable streaming with `"stream": true`:
+
+```bash
+curl -N -X POST "http://localhost:8000/v1/responses" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "gpt-oss-20b", "input": "Hello!", "stream": true}'
+```
+
+**Streaming Events:**
+
+```json
+event: response.created
+data: {"type": "response.created", "response_id": "resp_xxx", "response": {...}}
+
+event: response.reasoning_summary.delta
+data: {"type": "response.reasoning_summary.delta", "delta": "Thinking...", "item_id": "rs_xxx"}
+
+event: response.output_text.delta
+data: {"type": "response.output_text.delta", "delta": "Hello", "item_id": "msg_xxx"}
+
+event: response.output_item.added
+data: {"type": "response.output_item.added", "item": {...}, "output_index": 0}
+
+event: response.completed
+data: {"type": "response.completed", "response_id": "resp_xxx", "response": {...}}
+```
+
+### Output Types
+
+| Type | Description |
+|------|-------------|
+| `reasoning` | Model's thinking/analysis (o-series compatible) |
+| `message` | Text response from assistant |
+| `function_call` | Tool/function call request |
 
 ---
 
-## Session Management
+## Conversations API
 
-### POST /v1/sessions
+Manage persistent conversations for multi-turn interactions.
 
-Create a new chat session.
+### POST /v1/conversations
+
+Create a new conversation.
 
 ```bash
-curl -X POST "http://localhost:8000/v1/sessions" \
-  -H "Authorization: Bearer $API_KEY"
+curl -X POST "http://localhost:8000/v1/conversations" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"metadata": {"title": "My Chat"}}'
 ```
 
 **Response:**
 
 ```json
 {
-  "session_id": "sess_abc123def456",
-  "max_context": 65536,
-  "created_at": 1234567890.123
+  "id": "conv_abc123def456",
+  "object": "conversation",
+  "created_at": 1234567890,
+  "metadata": {"title": "My Chat"},
+  "items": []
 }
 ```
 
-### GET /v1/sessions
+### GET /v1/conversations
 
-List all saved sessions (sorted by last accessed).
+List all conversations.
 
 ```bash
-curl "http://localhost:8000/v1/sessions" \
+curl "http://localhost:8000/v1/conversations?limit=20" \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-### GET /v1/sessions/current
+### GET /v1/conversations/{conversation_id}
 
-Get current active session stats.
+Get a conversation by ID.
 
 ```bash
-curl "http://localhost:8000/v1/sessions/current" \
+curl "http://localhost:8000/v1/conversations/conv_abc123" \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-**Response:**
+### DELETE /v1/conversations/{conversation_id}
 
-```json
-{
-  "session_id": "sess_abc123def456",
-  "message_count": 4,
-  "token_count": 256,
-  "max_context": 65536,
-  "tokens_remaining": 65280,
-  "context_usage": 0.0039
-}
-```
-
-### POST /v1/sessions/{session_id}/load
-
-Resume a previously saved session.
+Delete a conversation.
 
 ```bash
-curl -X POST "http://localhost:8000/v1/sessions/sess_abc123/load" \
+curl -X DELETE "http://localhost:8000/v1/conversations/conv_abc123" \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-### GET /v1/sessions/{session_id}/messages
+### GET /v1/conversations/{conversation_id}/items
 
-Retrieve all messages from a session.
+Get items (messages) from a conversation.
 
 ```bash
-curl "http://localhost:8000/v1/sessions/sess_abc123/messages" \
+curl "http://localhost:8000/v1/conversations/conv_abc123/items?limit=100&order=asc" \
   -H "Authorization: Bearer $API_KEY"
 ```
 
-### POST /v1/sessions/count-tokens
+### POST /v1/conversations/{conversation_id}/items
 
-Count tokens in text using the model's tokenizer.
-
-```bash
-curl -X POST "http://localhost:8000/v1/sessions/count-tokens?text=Hello%20world" \
-  -H "Authorization: Bearer $API_KEY"
-```
-
-### Using Sessions with Chat
-
-Pass `X-Session-Id` header to enable session-based conversations:
+Add items to a conversation.
 
 ```bash
-# First message
-curl -X POST "http://localhost:8000/v1/chat/completions" \
+curl -X POST "http://localhost:8000/v1/conversations/conv_abc123/items" \
   -H "Authorization: Bearer $API_KEY" \
-  -H "X-Session-Id: sess_abc123" \
   -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "My name is Alice."}]}'
-
-# Follow-up (history auto-prepended)
-curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "X-Session-Id: sess_abc123" \
-  -H "Content-Type: application/json" \
-  -d '{"messages": [{"role": "user", "content": "What is my name?"}]}'
+  -d '{
+    "items": [
+      {"type": "message", "role": "user", "content": "Hello!"},
+      {"type": "message", "role": "assistant", "content": "Hi there!"}
+    ]
+  }'
 ```
 
 ---
@@ -246,22 +287,12 @@ Summarize code, logs, or documents using local Gemma or Gemini API.
 | `temperature` | float | null | Sampling temperature |
 | `enable_safety` | boolean | false | Enable Gemini safety filters |
 
-**Example (local Gemma):**
+**Example:**
 
 ```bash
 curl -X POST "http://localhost:8000/summarize" \
   -H "Authorization: Bearer $API_KEY" \
   -F "file=@code.py" \
-  -F "persona=developer"
-```
-
-**Example (Gemini API):**
-
-```bash
-curl -X POST "http://localhost:8000/summarize" \
-  -H "Authorization: Bearer $API_KEY" \
-  -F "file=@code.py" \
-  -F "model_name=gemini-2.5-flash" \
   -F "persona=developer"
 ```
 
@@ -272,27 +303,6 @@ curl -X POST "http://localhost:8000/summarize" \
   "language": "Python",
   "summary": "This module implements..."
 }
-```
-
-**Security Validator Persona:**
-
-```bash
-curl -X POST "http://localhost:8000/summarize" \
-  -H "Authorization: Bearer $API_KEY" \
-  -F "file=@document.md" \
-  -F "model_name=gemini-2.5-flash" \
-  -F "persona=security_validator" \
-  -F "enable_safety=true"
-```
-
-Response format:
-
-```text
-THREAT ASSESSMENT: [SAFE | SUSPICIOUS | MALICIOUS]
-DETECTED PATTERNS: [List]
-SPECIFIC CONCERNS: [Quotes]
-RECOMMENDATION: [APPROVE | REVIEW | REJECT]
-REASONING: [Explanation]
 ```
 
 ---
@@ -330,16 +340,13 @@ curl -X POST "http://localhost:8000/parse-ast" \
     "name": "my_function",
     "docstring": "Function docs",
     "params": [{"name": "arg1", "type": "str"}],
-    "returns": "int",
-    "decorators": [],
-    "is_async": false
+    "returns": "int"
   }],
   "classes": [{
     "name": "MyClass",
     "docstring": "Class docs",
     "base_classes": ["BaseClass"],
-    "methods": [...],
-    "decorators": []
+    "methods": [...]
   }]
 }
 ```
@@ -366,7 +373,7 @@ curl "http://localhost:8000/health"
   "gemini_api": {"api_key_set": true, "default_model": "gemini-2.5-flash"},
   "chat_model": {
     "name": "gpt-oss-20b",
-    "path": "models/gpt-oss-20b-Q4_K_M.gguf",
+    "path": "models/",
     "status": "loaded",
     "context_length": 65536,
     "supports_tools": true
@@ -428,7 +435,7 @@ All endpoints return standard HTTP error codes:
 |------|-------------|
 | 400 | Bad request (invalid parameters) |
 | 401 | Unauthorized (invalid/missing API key) |
-| 404 | Not found (invalid session ID, etc.) |
+| 404 | Not found (invalid conversation ID, etc.) |
 | 429 | Too many requests (rate limit exceeded) |
 | 500 | Internal server error |
 | 503 | Service unavailable (model not loaded) |

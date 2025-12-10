@@ -10,7 +10,6 @@ import fastapi_swagger_dark as fsd
 from fastapi import (
     Depends,
     File,
-    Header,
     HTTPException,
     Query,
     Request,
@@ -22,14 +21,29 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .chat import ChatModelWrapper
-from .config import settings
+from .config import get_conversations_dir, settings
+from .conversations import ConversationManager
 from .embedding import SentenceTransformerWrapper
 from .openai_compat import (
-    ChatCompletionRequest,
     ModelInfo,
     ModelsResponse,
 )
-from .session import SessionManager
+from .responses import (
+    Response,
+    ResponseUsage,
+    convert_chat_response_to_response,
+    convert_tools_to_chat_format,
+    create_output_item_added_event,
+    create_reasoning_delta_event,
+    create_response_created_event,
+    create_response_done_event,
+    create_text_delta_event,
+    generate_call_id,
+    generate_message_id,
+    generate_reasoning_id,
+    generate_response_id,
+    parse_input_to_messages,
+)
 from .summarization import SummarizationModelWrapper
 from .util import condense_log, is_likely_binary
 from .util.rate_limiter import get_in_memory_rate_limiter
@@ -86,7 +100,7 @@ class PromptNames(str, Enum):
 embedding_model_wrapper = SentenceTransformerWrapper()
 summarization_model_wrapper: SummarizationModelWrapper | None = None
 chat_model_wrapper: ChatModelWrapper | None = None
-session_manager: SessionManager | None = None
+conversation_manager: ConversationManager | None = None
 
 
 @asynccontextmanager
@@ -94,7 +108,7 @@ async def lifespan(app: fastapi.FastAPI):
     """
     Loads the models on application startup and validates configuration.
     """
-    global summarization_model_wrapper, chat_model_wrapper, session_manager
+    global summarization_model_wrapper, chat_model_wrapper, conversation_manager
 
     # Validate API key configuration
     if not settings.WORKBENCH_API_KEY:
@@ -126,13 +140,11 @@ async def lifespan(app: fastapi.FastAPI):
         chat_model_wrapper = ChatModelWrapper()
         chat_model_wrapper.load_model()
 
-        # Initialize session manager with model for tokenization
-        session_manager = SessionManager(
-            model=chat_model_wrapper.model,
-            max_context=settings.CHAT_N_CTX,
-            sessions_dir="sessions",
-        )
-        logger.info("Session manager initialized")
+    # Initialize conversation manager (Conversations API)
+    # Store conversations in ~/.egemma/{model-name}/conversations
+    conv_dir = get_conversations_dir(settings.CHAT_MODEL_NAME)
+    conversation_manager = ConversationManager(conversations_dir=conv_dir)
+    logger.info(f"Conversation manager initialized: {conv_dir}")
 
     yield
 
@@ -366,7 +378,7 @@ async def summarize(
         ),
     ),
 ):
-    logger.info(
+    logger.debug(
         f"Received /summarize request. "
         f"Content-Type: {request.headers.get('content-type')}"
     )
@@ -449,7 +461,7 @@ async def parse_ast(
     file: UploadFile,
     language: str = fastapi.Form(...),
 ):
-    logger.info(
+    logger.debug(
         f"Received /parse-ast request. "
         f"Content-Type: {request.headers.get('content-type')}"
     )
@@ -476,154 +488,8 @@ async def parse_ast(
 
 
 # =============================================================================
-# OpenAI-Compatible Chat Endpoints
+# OpenAI-Compatible Models Endpoint
 # =============================================================================
-
-
-@app.post(
-    "/v1/chat/completions",
-    summary="Chat Completions (OpenAI-compatible)",
-    description="GPT-OSS-20B chat. Supports streaming, tool calling, and sessions.",
-    tags=["OpenAI API"],
-    dependencies=[
-        Depends(get_api_key),
-        Depends(
-            get_in_memory_rate_limiter(
-                rate_limit_seconds=settings.CHAT_RATE_LIMIT_SECONDS,
-                rate_limit_calls=settings.CHAT_RATE_LIMIT_CALLS,
-            )
-        ),
-    ],
-)
-async def chat_completions(
-    request: ChatCompletionRequest,
-    x_session_id: str | None = Header(None, alias="X-Session-Id"),
-):
-    """
-    OpenAI-compatible chat completions endpoint.
-
-    Optional session support via X-Session-Id header:
-    - If provided, prepends stored messages from session
-    - Stores user/assistant messages after completion
-    - Without header, operates stateless (standard OpenAI behavior)
-    """
-    if chat_model_wrapper is None or not chat_model_wrapper.is_loaded:
-        raise HTTPException(
-            status_code=503,
-            detail="Chat model not loaded. Set CHAT_MODEL_ENABLED=true in .env",
-        )
-
-    # Convert Pydantic messages to dicts
-    request_messages = [msg.model_dump(exclude_none=True) for msg in request.messages]
-
-    # Session handling: prepend stored messages if session specified
-    session = None
-    if x_session_id and session_manager:
-        session = session_manager.get_session(x_session_id)
-        if session is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session not found: {x_session_id}",
-            )
-        # Prepend session history to request messages
-        stored_messages = session_manager.get_messages()
-        messages = stored_messages + request_messages
-        logger.debug(
-            f"Session {x_session_id}: {len(stored_messages)} stored + "
-            f"{len(request_messages)} new messages"
-        )
-    else:
-        messages = request_messages
-
-    # Convert tools if provided
-    tools = None
-    if request.tools:
-        tools = [tool.model_dump() for tool in request.tools]
-
-    try:
-        if request.stream:
-            # Streaming response (SSE)
-            from fastapi.responses import StreamingResponse
-
-            collected_content = []
-
-            async def generate_stream():
-                stream = await run_in_threadpool(
-                    chat_model_wrapper.create_completion,
-                    messages=messages,
-                    max_tokens=request.max_tokens,
-                    temperature=request.temperature,
-                    tools=tools,
-                    tool_choice=request.tool_choice,
-                    stream=True,
-                    include_thinking=request.include_thinking,
-                )
-                import json
-
-                for chunk in stream:
-                    # Collect content for session storage
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    if delta.get("content"):
-                        collected_content.append(delta["content"])
-                    yield f"data: {json.dumps(chunk)}\n\n"
-                yield "data: [DONE]\n\n"
-
-                # Store messages in session after streaming completes
-                if session and session_manager:
-                    # Store user messages from request
-                    for msg in request_messages:
-                        session_manager.add_message(msg)
-                    # Store assistant response
-                    if collected_content:
-                        session_manager.add_message(
-                            {
-                                "role": "assistant",
-                                "content": "".join(collected_content),
-                            }
-                        )
-
-            return StreamingResponse(
-                generate_stream(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Session-Id": x_session_id or "",
-                },
-            )
-        else:
-            # Non-streaming response
-            response = await run_in_threadpool(
-                chat_model_wrapper.create_completion,
-                messages=messages,
-                max_tokens=request.max_tokens,
-                temperature=request.temperature,
-                tools=tools,
-                tool_choice=request.tool_choice,
-                stream=False,
-                include_thinking=request.include_thinking,
-            )
-
-            # Store messages in session
-            if session and session_manager:
-                # Store user messages from request
-                for msg in request_messages:
-                    session_manager.add_message(msg)
-                # Store assistant response
-                assistant_msg = response.get("choices", [{}])[0].get("message", {})
-                if assistant_msg.get("content"):
-                    session_manager.add_message(
-                        {
-                            "role": "assistant",
-                            "content": assistant_msg["content"],
-                        }
-                    )
-
-            return response
-
-    except Exception as e:
-        logger.error(f"Chat completion error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get(
@@ -657,145 +523,488 @@ async def list_models():
 
 
 # =============================================================================
-# Session Management Endpoints
+# OpenAI Conversations API
 # =============================================================================
 
 
 @app.post(
-    "/v1/sessions",
-    summary="Create Session",
-    description="Create a new chat session. Invalidates any existing session.",
-    tags=["Sessions"],
+    "/v1/conversations",
+    summary="Create Conversation",
+    description="Create a new conversation.",
+    tags=["Conversations"],
     dependencies=[Depends(get_api_key)],
 )
-async def create_session():
-    """Create a new session, invalidating any existing one."""
-    if session_manager is None:
+async def create_conversation(
+    request: Request,
+):
+    """Create a new conversation."""
+    if conversation_manager is None:
         raise HTTPException(
             status_code=503,
-            detail="Session manager not initialized. Enable chat model.",
+            detail="Conversation manager not initialized.",
         )
 
-    session = session_manager.create_session()
-    return {
-        "session_id": session.session_id,
-        "max_context": session.max_context,
-        "created_at": session.created_at,
-    }
+    # Parse optional metadata from request body
+    metadata = None
+    try:
+        body = await request.json()
+        metadata = body.get("metadata")
+    except Exception:
+        pass  # No body or invalid JSON is OK
+
+    conv = conversation_manager.create(metadata)
+    return conv.to_dict()
 
 
 @app.get(
-    "/v1/sessions/current",
-    summary="Get Current Session",
-    description="Get current active session info and token usage.",
-    tags=["Sessions"],
+    "/v1/conversations",
+    summary="List Conversations",
+    description="List all conversations.",
+    tags=["Conversations"],
     dependencies=[Depends(get_api_key)],
 )
-async def get_current_session():
-    """Get current session stats."""
-    if session_manager is None:
+async def list_conversations(
+    limit: int = Query(20, ge=1, le=100),
+):
+    """List all conversations."""
+    if conversation_manager is None:
         raise HTTPException(
             status_code=503,
-            detail="Session manager not initialized.",
+            detail="Conversation manager not initialized.",
         )
 
-    session = session_manager.get_session()
-    if session is None:
-        raise HTTPException(status_code=404, detail="No active session")
+    convs = conversation_manager.list(limit)
+    return {"object": "list", "data": convs, "has_more": False}
 
-    return session.to_stats()
+
+@app.get(
+    "/v1/conversations/{conversation_id}",
+    summary="Get Conversation",
+    description="Get a conversation by ID.",
+    tags=["Conversations"],
+    dependencies=[Depends(get_api_key)],
+)
+async def get_conversation(conversation_id: str):
+    """Get a conversation by ID."""
+    if conversation_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation manager not initialized.",
+        )
+
+    conv = conversation_manager.get(conversation_id)
+    if conv is None:
+        raise HTTPException(404, f"Conversation not found: {conversation_id}")
+    return conv.to_dict()
+
+
+@app.delete(
+    "/v1/conversations/{conversation_id}",
+    summary="Delete Conversation",
+    description="Delete a conversation.",
+    tags=["Conversations"],
+    dependencies=[Depends(get_api_key)],
+)
+async def delete_conversation(conversation_id: str):
+    """Delete a conversation."""
+    if conversation_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation manager not initialized.",
+        )
+
+    deleted = conversation_manager.delete(conversation_id)
+    if not deleted:
+        raise HTTPException(404, f"Conversation not found: {conversation_id}")
+    return {"id": conversation_id, "object": "conversation.deleted", "deleted": True}
+
+
+@app.get(
+    "/v1/conversations/{conversation_id}/items",
+    summary="Get Conversation Items",
+    description="Get items (messages) from a conversation.",
+    tags=["Conversations"],
+    dependencies=[Depends(get_api_key)],
+)
+async def get_conversation_items(
+    conversation_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+):
+    """Get items from a conversation."""
+    if conversation_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Conversation manager not initialized.",
+        )
+
+    conv = conversation_manager.get(conversation_id)
+    if conv is None:
+        raise HTTPException(404, f"Conversation not found: {conversation_id}")
+
+    items = conversation_manager.get_items(conversation_id, limit, order)
+    return {"object": "list", "data": items, "has_more": False}
 
 
 @app.post(
-    "/v1/sessions/{session_id}/load",
-    summary="Load Session",
-    description="Load/resume a previously saved session by ID.",
-    tags=["Sessions"],
+    "/v1/conversations/{conversation_id}/items",
+    summary="Add Conversation Items",
+    description="Add items (messages) to a conversation.",
+    tags=["Conversations"],
     dependencies=[Depends(get_api_key)],
 )
-async def load_session(session_id: str):
-    """Load an existing session by ID."""
-    if session_manager is None:
+async def add_conversation_items(
+    conversation_id: str,
+    request: Request,
+):
+    """Add items to a conversation."""
+    if conversation_manager is None:
         raise HTTPException(
             status_code=503,
-            detail="Session manager not initialized.",
+            detail="Conversation manager not initialized.",
         )
 
-    session = session_manager.load_session(session_id)
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session not found: {session_id}",
-        )
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"Invalid JSON body: {e}") from e
 
-    return session.to_stats()
+    items = body.get("items", [])
+    if not items:
+        raise HTTPException(400, "No items provided")
 
-
-@app.get(
-    "/v1/sessions/{session_id}/messages",
-    summary="Get Session Messages",
-    description="Get all messages from a session.",
-    tags=["Sessions"],
-    dependencies=[Depends(get_api_key)],
-)
-async def get_session_messages(session_id: str):
-    """Get all messages stored in a session."""
-    if session_manager is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Session manager not initialized.",
-        )
-
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session not found: {session_id}",
-        )
-
-    return {
-        "session_id": session.session_id,
-        "message_count": len(session.messages),
-        "token_count": session.token_count,
-        "messages": session.messages,
-    }
+    try:
+        added = conversation_manager.add_items(conversation_id, items)
+        return {"object": "list", "data": added}
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
 
 
-@app.get(
-    "/v1/sessions",
-    summary="List Sessions",
-    description="List all saved sessions.",
-    tags=["Sessions"],
-    dependencies=[Depends(get_api_key)],
-)
-async def list_sessions():
-    """List all saved sessions."""
-    if session_manager is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Session manager not initialized.",
-        )
-
-    return {"sessions": session_manager.list_sessions()}
+# =============================================================================
+# OpenAI Responses API
+# =============================================================================
 
 
 @app.post(
-    "/v1/sessions/count-tokens",
-    summary="Count Tokens",
-    description="Count tokens in provided text using the model's tokenizer.",
-    tags=["Sessions"],
-    dependencies=[Depends(get_api_key)],
+    "/v1/responses",
+    summary="Create Response (OpenAI Responses API)",
+    description=(
+        "Generate a model response using the Responses API format. "
+        "Supports stateful conversations, tool calling, and streaming."
+    ),
+    tags=["Responses API"],
+    dependencies=[
+        Depends(get_api_key),
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.CHAT_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.CHAT_RATE_LIMIT_CALLS,
+            )
+        ),
+    ],
 )
-async def count_tokens(text: str = Query(..., description="Text to count tokens for")):
-    """Count tokens in text."""
-    if session_manager is None:
+async def create_response(
+    request: Request,
+):
+    """
+    OpenAI Responses API endpoint.
+
+    Creates a model response given input. Supports:
+    - Simple string input or structured input items
+    - System instructions
+    - Tool definitions and tool calling
+    - Stateful conversations via previous_response_id
+    - Streaming via SSE
+
+    This is the primary API for the OpenAI Agents SDK.
+    """
+    if chat_model_wrapper is None or not chat_model_wrapper.is_loaded:
         raise HTTPException(
             status_code=503,
-            detail="Session manager not initialized.",
+            detail="Chat model not loaded. Set CHAT_MODEL_ENABLED=true in .env",
         )
 
-    token_count = session_manager.count_tokens(text)
-    return {"text_length": len(text), "token_count": token_count}
+    # Parse request body
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(400, f"Invalid JSON body: {e}") from e
+
+    # Extract parameters
+    input_data = body.get("input")
+    model = body.get("model", settings.CHAT_MODEL_NAME)
+    instructions = body.get("instructions")
+    max_output_tokens = body.get("max_output_tokens", settings.CHAT_MAX_TOKENS)
+    temperature = body.get("temperature", settings.CHAT_TEMPERATURE)
+    tools = body.get("tools")
+    tool_choice = body.get("tool_choice")
+    stream = body.get("stream", False)
+    # Support both 'previous_response_id' and 'conversation' fields for history loading
+    # OpenAI SDK sends both fields - use whichever is provided
+    previous_response_id = body.get("previous_response_id") or body.get("conversation")
+
+    # Convert input to chat messages
+    messages = parse_input_to_messages(input_data, instructions)
+
+    # If previous_response_id/conversation provided, load conversation history
+    # The previous_response_id may be a conversation_id from the Conversations API
+    if previous_response_id and conversation_manager:
+        try:
+            # Load conversation history and prepend to current messages
+            history = conversation_manager.get_items_as_messages(previous_response_id)
+            if history:
+                # Prepend history before current input (after system msg if present)
+                # System message is typically first in messages list
+                if messages and messages[0].get("role") == "system":
+                    # Keep system message first, then history, then current input
+                    system_msg = messages[0]
+                    current_input = messages[1:] if len(messages) > 1 else []
+                    messages = [system_msg] + history + current_input
+                else:
+                    # No system message, just prepend history
+                    messages = history + messages
+                logger.debug(
+                    f"Loaded {len(history)} history items for "
+                    f"conversation {previous_response_id}"
+                )
+        except Exception as e:
+            # Graceful degradation - continue without history if lookup fails
+            logger.warning(f"Failed to load conversation history: {e}")
+
+    # Convert tools to chat format
+    chat_tools = convert_tools_to_chat_format(tools)
+
+    # Generate response ID
+    response_id = generate_response_id()
+
+    try:
+        if stream:
+            # Streaming response
+            from fastapi.responses import StreamingResponse
+
+            async def generate_stream():
+                # Create initial response object
+                initial_response = Response(
+                    id=response_id,
+                    model=model,
+                    status="in_progress",
+                    instructions=instructions,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    previous_response_id=previous_response_id,
+                )
+
+                # Send response.created event
+                yield create_response_created_event(initial_response)
+
+                # Track output for final response
+                collected_content = []
+                collected_thinking = []
+                message_item_id = generate_message_id()
+                reasoning_item_id = generate_reasoning_id()
+                usage = ResponseUsage()
+
+                # Log request for debugging (use DEBUG level to avoid console spam)
+                logger.debug(f"[STREAM] Request to model: {len(messages)} messages")
+                for i, msg in enumerate(messages):
+                    role = msg.get("role", "?")
+                    content = msg.get("content", "")
+                    tool_calls = msg.get("tool_calls", [])
+                    tool_call_id = msg.get("tool_call_id", "")
+                    names = [
+                        tc.get("function", {}).get("name", "?") for tc in tool_calls
+                    ]
+                    tc_info = f" [calls: {names}]" if tool_calls else ""
+                    tc_id_info = f" [for: {tool_call_id}]" if tool_call_id else ""
+                    logger.debug(f"  [{i}] {role}{tc_info}{tc_id_info}: {content}")
+
+                # Call chat model with streaming
+                stream_response = await run_in_threadpool(
+                    chat_model_wrapper.create_completion,
+                    messages=messages,
+                    max_tokens=max_output_tokens,
+                    temperature=temperature,
+                    tools=chat_tools,
+                    tool_choice=tool_choice,
+                    stream=True,
+                    include_thinking=True,  # o-series reasoning
+                )
+
+                for chunk in stream_response:
+                    # Check for client disconnect
+                    if await request.is_disconnected():
+                        break
+
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+
+                        # Handle reasoning/thinking (GPT-OSS Harmony -> OpenAI o-series)
+                        thinking = delta.get("thinking", "")
+                        if thinking:
+                            collected_thinking.append(thinking)
+                            yield create_reasoning_delta_event(
+                                response_id, thinking, reasoning_item_id
+                            )
+
+                        # Handle text content
+                        content = delta.get("content", "")
+                        if content:
+                            collected_content.append(content)
+                            yield create_text_delta_event(
+                                response_id, content, message_item_id
+                            )
+
+                        # Note: Tool calls are NOT streamed by llama-cpp.
+                        # We parse them from collected_content after streaming.
+
+                    # Extract usage if present
+                    chunk_usage = chunk.get("usage")
+                    if chunk_usage:
+                        usage.input_tokens = chunk_usage.get("prompt_tokens", 0)
+                        usage.output_tokens = chunk_usage.get("completion_tokens", 0)
+                        usage.total_tokens = chunk_usage.get("total_tokens", 0)
+
+                # Build final response
+                output = []
+                output_text = "".join(collected_content)
+                output_index = 0
+
+                # Include reasoning first (model thinks, then responds)
+                # SDK reads "summary" field, converts to "content" internally
+                reasoning_text = "".join(collected_thinking)
+                if reasoning_text:
+                    summary_item = {"type": "summary_text", "text": reasoning_text}
+                    reasoning_item = {
+                        "id": reasoning_item_id,
+                        "type": "reasoning",
+                        "summary": [summary_item],
+                    }
+                    output.append(reasoning_item)
+                    # Emit output_item.added event for SDK
+                    yield create_output_item_added_event(
+                        response_id, reasoning_item, output_index
+                    )
+                    output_index += 1
+
+                # Parse tool calls from collected content (streaming doesn't
+                # emit tool_calls, so we parse from text like batch mode)
+                parsed_tool_calls = []
+                if tools and output_text:
+                    parsed_tool_calls = (
+                        chat_model_wrapper._parse_tool_calls(output_text) or []
+                    )
+
+                # If we have tool calls, add them and clear text output
+                if parsed_tool_calls:
+                    for tc in parsed_tool_calls:
+                        func = tc.get("function", {})
+                        fc_item = {
+                            "id": generate_message_id(),
+                            "type": "function_call",
+                            "call_id": tc.get("id", generate_call_id()),
+                            "name": func.get("name", ""),
+                            "arguments": func.get("arguments", "{}"),
+                            "status": "completed",
+                        }
+                        output.append(fc_item)
+                        # Emit output_item.added event for SDK
+                        yield create_output_item_added_event(
+                            response_id, fc_item, output_index
+                        )
+                        output_index += 1
+                    # Clear text output when we have tool calls (like batch mode)
+                    output_text = ""
+                elif output_text:
+                    # Only add message output if no tool calls
+                    message_item = {
+                        "id": message_item_id,
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": output_text}],
+                    }
+                    output.append(message_item)
+                    # Emit output_item.added event for SDK
+                    yield create_output_item_added_event(
+                        response_id, message_item, output_index
+                    )
+                    output_index += 1
+
+                # Create final response
+                final_response = Response(
+                    id=response_id,
+                    model=model,
+                    output=output,
+                    output_text=output_text,
+                    status="completed",
+                    instructions=instructions,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    previous_response_id=previous_response_id,
+                    usage=usage,
+                )
+
+                # Send response.completed event
+                yield create_response_done_event(final_response)
+
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        else:
+            # Non-streaming response
+            # Log request for debugging (use DEBUG level to avoid console spam)
+            logger.debug(f"[BATCH] Request to model: {len(messages)} messages")
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls", [])
+                tool_call_id = msg.get("tool_call_id", "")
+                names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+                tc_info = f" [calls: {names}]" if tool_calls else ""
+                tc_id_info = f" [for: {tool_call_id}]" if tool_call_id else ""
+                logger.debug(f"  [{i}] {role}{tc_info}{tc_id_info}: {content}")
+
+            chat_response = await run_in_threadpool(
+                chat_model_wrapper.create_completion,
+                messages=messages,
+                max_tokens=max_output_tokens,
+                temperature=temperature,
+                tools=chat_tools,
+                tool_choice=tool_choice,
+                stream=False,
+                include_thinking=True,  # o-series reasoning
+            )
+
+            # Convert to Responses API format
+            response = convert_chat_response_to_response(
+                chat_response=chat_response,
+                response_id=response_id,
+                model=model,
+                instructions=instructions,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                previous_response_id=previous_response_id,
+            )
+
+            return response.to_dict()
+
+    except Exception as e:
+        logger.error(f"Responses API error: {e}", exc_info=True)
+        # Return error in Responses API format
+        error_response = Response(
+            id=response_id,
+            model=model,
+            status="failed",
+            error={"type": "server_error", "message": str(e)},
+        )
+        raise HTTPException(status_code=500, detail=error_response.to_dict()) from e
 
 
 @app.get("/", tags=["Root"])

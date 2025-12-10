@@ -1,4 +1,14 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def get_conversations_dir(model_name: str) -> Path:
+    """Get the conversations directory for a model.
+
+    Returns ~/.egemma/{model-name}/conversations
+    """
+    return Path.home() / ".egemma" / model_name / "conversations"
 
 
 class Settings(BaseSettings):
@@ -7,7 +17,7 @@ class Settings(BaseSettings):
     SUMMARY_LOCAL_ENABLED: bool = True
     # Chat Model Settings (GPT-OSS-20B)
     CHAT_MODEL_ENABLED: bool = True
-    CHAT_MODEL_PATH: str = "models/gpt-oss-20b-Q4_K_M.gguf"
+    CHAT_MODEL_PATH: str = "models/gpt-oss-20b-F16.gguf"
     CHAT_MODEL_NAME: str = "gpt-oss-20b"
     CHAT_N_CTX: int = 65536  # Context window (64K - stable on 32GB)
     CHAT_N_GPU_LAYERS: int = -1  # -1 = all layers on GPU (Metal)
@@ -15,13 +25,14 @@ class Settings(BaseSettings):
     CHAT_USE_MMAP: bool = False  # Disable mmap to prevent M3 freeze during load
     CHAT_FLASH_ATTN: bool = True  # Enable Flash Attention for Metal
     CHAT_MAX_TOKENS: int = 4096
-    CHAT_TEMPERATURE: float = 0.7
+    CHAT_TEMPERATURE: float = 1.0
+    CHAT_REASONING_EFFORT: str = "medium"  # low, medium, high - controls thinking depth
     CHAT_RATE_LIMIT_SECONDS: int = 60
-    CHAT_RATE_LIMIT_CALLS: int = 10
+    CHAT_RATE_LIMIT_CALLS: int = 100
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
     SUMMARY_MAX_TOKEN: int = 300
-    SUMMARY_TEMP: float = 0.2
+    SUMMARY_TEMP: float = 0.7
     SUMMARY_N_CTX: int = 8192
     GEMINI_API_KEY: str | None = None
     GEMINI_DEFAULT_MODEL: str = "gemini-2.5-flash"

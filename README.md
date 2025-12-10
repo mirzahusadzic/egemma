@@ -4,7 +4,7 @@
 <img src="./docs/assets/egemma-logo.png" alt="eGemma Logo" width="400"/>
 
 A unified API server for embeddings, summarization, and chat completions.
-Run powerful AI models locally with optional cloud fallback.
+**Fully compatible with OpenAI Agent SDK** - run powerful AI models locally.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -15,9 +15,9 @@ Run powerful AI models locally with optional cloud fallback.
 
 | Capability | Model | Description |
 |------------|-------|-------------|
+| **Chat/Agents** | GPT-OSS-20B | OpenAI Agent SDK compatible, 128K context, tool calling |
 | **Embeddings** | Gemma 300M | Matryoshka support (128-768 dims), optimized prompts |
 | **Summarization** | Gemma 12B / Gemini API | Code, logs, docs with persona-based analysis |
-| **Chat** | GPT-OSS-20B | OpenAI-compatible API, 128K context, tool calling |
 
 **Infrastructure:** Bearer auth, rate limiting, LRU caching, Metal/CUDA acceleration.
 
@@ -33,10 +33,10 @@ uv pip install -r requirements.txt
 WORKBENCH_API_KEY="your-secret-key"
 GEMINI_API_KEY="optional-for-cloud-summarization"
 CHAT_MODEL_ENABLED=true
-CHAT_MODEL_PATH=models/gpt-oss-20b-Q4_K_M.gguf
+CHAT_MODEL_PATH=models/gpt-oss-20b-F16.gguf
 
-# 3. Download chat model (optional, ~12GB)
-huggingface-cli download unsloth/gpt-oss-20b-GGUF gpt-oss-20b-Q4_K_M.gguf --local-dir models
+# 3. Download chat model (optional, ~14GB)
+huggingface-cli download unsloth/gpt-oss-20b-GGUF gpt-oss-20b-F16.gguf --local-dir models
 
 # 4. Run
 uvicorn src.server:app --host localhost --port 8000
@@ -44,24 +44,62 @@ uvicorn src.server:app --host localhost --port 8000
 
 API docs at `http://localhost:8000/docs`
 
-## API Overview
+## OpenAI Agent SDK Compatibility
 
-### Chat Completions (OpenAI-compatible)
+eGemma implements the **OpenAI Responses API**, making it fully compatible with the OpenAI Agent SDK (`@openai/agents`):
+
+```typescript
+import { OpenAI } from "openai";
+import { Agent, run } from "@openai/agents";
+
+const client = new OpenAI({
+  baseURL: "http://localhost:8000/v1",
+  apiKey: "your-key",
+});
+
+const agent = new Agent({
+  name: "local-agent",
+  model: "gpt-oss-20b",
+  instructions: "You are a helpful assistant.",
+  tools: [/* your tools */],
+});
+
+const result = await run(agent, "Hello!");
+```
+
+### Responses API
+
+The primary endpoint for agentic workflows:
 
 ```bash
-curl -X POST "http://localhost:8000/v1/chat/completions" \
+curl -X POST "http://localhost:8000/v1/responses" \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model": "gpt-oss-20b", "messages": [{"role": "user", "content": "Hello!"}]}'
+  -d '{
+    "model": "gpt-oss-20b",
+    "input": "List files in the current directory",
+    "stream": true,
+    "tools": [{
+      "type": "function",
+      "name": "bash",
+      "description": "Execute bash command",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string"}
+        },
+        "required": ["command"]
+      }
+    }]
+  }'
 ```
 
-Works with OpenAI SDK:
+Supports:
 
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="your-key")
-response = client.chat.completions.create(model="gpt-oss-20b", messages=[...])
-```
+- **Streaming** via Server-Sent Events (SSE)
+- **Tool calling** with function definitions
+- **Extended thinking** (reasoning traces)
+- **Stateful conversations** via `previous_response_id`
 
 ### Embeddings
 
@@ -84,8 +122,11 @@ curl -X POST "http://localhost:8000/summarize" \
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | OpenAI-compatible chat (streaming, tools, sessions) |
-| `/v1/sessions` | POST/GET | Session management for multi-turn conversations |
+| `/v1/responses` | POST | OpenAI Responses API (Agent SDK compatible) |
+| `/v1/conversations` | POST/GET | Conversation management |
+| `/v1/conversations/{id}` | GET/DELETE | Get or delete conversation |
+| `/v1/conversations/{id}/items` | GET/POST | Conversation items (messages) |
+| `/v1/models` | GET | List available models |
 | `/embed` | POST | Generate embeddings (128-768 dimensions) |
 | `/summarize` | POST | Summarize code/docs with personas |
 | `/parse-ast` | POST | Python AST extraction |
@@ -103,9 +144,11 @@ HF_TOKEN="..."                # Required for Gemma models (embeddings + summariz
 
 # --- Chat Model (GPT-OSS) ---
 CHAT_MODEL_ENABLED=true
-CHAT_MODEL_PATH=models/gpt-oss-20b-Q4_K_M.gguf
+CHAT_MODEL_PATH=models/gpt-oss-20b-F16.gguf
 CHAT_N_CTX=65536              # Context window (max 131072)
 CHAT_N_GPU_LAYERS=-1          # -1 = all layers on GPU
+CHAT_TEMPERATURE=1.0          # Sampling temperature
+CHAT_REASONING_EFFORT=medium  # low, medium, high - controls thinking depth
 
 # --- Embeddings (Gemma 300M) ---
 FORCE_CPU=false               # Force CPU mode
@@ -117,37 +160,30 @@ SUMMARY_LOCAL_ENABLED=true    # Use local Gemma model
 GEMINI_API_KEY="..."          # Required for Gemini summarization fallback
 ```
 
-## Extended Features
+## Extended Thinking
 
-### Session Management
+GPT-OSS-20B exposes reasoning traces via Harmony format. When streaming, you'll see:
 
-Persistent server-side conversation history:
+```text
+event: response.reasoning_summary.delta
+data: {"delta": "The user wants to list files..."}
 
-```bash
-# Create session
-curl -X POST "http://localhost:8000/v1/sessions" -H "Authorization: Bearer $API_KEY"
-# Returns: {"session_id": "sess_abc123", ...}
-
-# Use in chat (history auto-prepended)
-curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "X-Session-Id: sess_abc123" \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"messages": [{"role": "user", "content": "Remember my name is Alice"}]}'
+event: response.output_text.delta
+data: {"delta": "Here are the files..."}
 ```
 
-### Extended Thinking
+Or in responses:
 
-GPT-OSS-20B exposes reasoning traces via Harmony format:
-
-```bash
-curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{"messages": [...], "include_thinking": true}'
+```json
+{
+  "output": [
+    {"type": "reasoning", "summary": [{"text": "Thinking about the request..."}]},
+    {"type": "message", "content": [{"text": "Here's my response..."}]}
+  ]
+}
 ```
 
-Response includes `thinking` field with model's internal reasoning.
-
-### Personas
+## Personas
 
 Customizable system prompts in `personas/` directory:
 

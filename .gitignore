@@ -44,3 +44,14 @@ htmlcov/
 
 # uv specific
 uv.lock
+
+# Node specific
+models
+node_modules
+package.json
+package-lock.json
+
+# cognition-cli specific
+.open_cognition
+.sigma
+
