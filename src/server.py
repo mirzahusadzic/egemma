@@ -138,9 +138,12 @@ async def lifespan(app: fastapi.FastAPI):
 
 
 app = fastapi.FastAPI(
-    title="Code Intelligence API",
-    description="API for embedding and summarizing code using Google's Gemma models.",
-    version="0.2.0",
+    title="eGemma API",
+    description=(
+        "Local AI workbench for embeddings, summarization, and chat completions. "
+        "Supports Gemma (embeddings/summarization), Gemini API, and GPT-OSS-20B (chat)."
+    ),
+    version="0.3.0",
     docs_url=None,
     lifespan=lifespan,
 )
