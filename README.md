@@ -6,7 +6,7 @@
 A unified API server for embeddings, summarization, and chat completions.
 Run powerful AI models locally with optional cloud fallback.
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 </div>
@@ -97,21 +97,24 @@ See [**Full API Reference →**](docs/api.md) for detailed documentation.
 ## Configuration
 
 ```env
-# Required
+# --- Required ---
 WORKBENCH_API_KEY="your-api-key"
+HF_TOKEN="..."                # Required for Gemma models (embeddings + summarization)
 
-# Chat Model (GPT-OSS-20B)
+# --- Chat Model (GPT-OSS) ---
 CHAT_MODEL_ENABLED=true
 CHAT_MODEL_PATH=models/gpt-oss-20b-Q4_K_M.gguf
 CHAT_N_CTX=65536              # Context window (max 131072)
 CHAT_N_GPU_LAYERS=-1          # -1 = all layers on GPU
 
-# Summarization
-SUMMARY_LOCAL_ENABLED=true    # Use local Gemma model
-GEMINI_API_KEY="..."          # Optional: Gemini API fallback
+# --- Embeddings (Gemma 300M) ---
+FORCE_CPU=false               # Force CPU mode
 
-# Hardware
-FORCE_CPU=false               # Force CPU for embeddings
+# --- Summarization (Gemma 12B) ---
+SUMMARY_LOCAL_ENABLED=true    # Use local Gemma model
+
+# --- Gemini API (Optional) ---
+GEMINI_API_KEY="..."          # Required for Gemini summarization fallback
 ```
 
 ## Extended Features
