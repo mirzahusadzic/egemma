@@ -5,6 +5,19 @@ class Settings(BaseSettings):
     WORKBENCH_API_KEY: str | None = None
     EMBEDDING_MODEL_NAME: str = "google/embeddinggemma-300m"
     SUMMARY_LOCAL_ENABLED: bool = True
+    # Chat Model Settings (GPT-OSS-20B)
+    CHAT_MODEL_ENABLED: bool = True
+    CHAT_MODEL_PATH: str = "models/gpt-oss-20b-Q4_K_M.gguf"
+    CHAT_MODEL_NAME: str = "gpt-oss-20b"
+    CHAT_N_CTX: int = 65536  # Context window (64K - stable on 32GB)
+    CHAT_N_GPU_LAYERS: int = -1  # -1 = all layers on GPU (Metal)
+    CHAT_N_BATCH: int = 2048  # Batch size for prompt processing
+    CHAT_USE_MMAP: bool = False  # Disable mmap to prevent M3 freeze during load
+    CHAT_FLASH_ATTN: bool = True  # Enable Flash Attention for Metal
+    CHAT_MAX_TOKENS: int = 4096
+    CHAT_TEMPERATURE: float = 0.7
+    CHAT_RATE_LIMIT_SECONDS: int = 60
+    CHAT_RATE_LIMIT_CALLS: int = 10
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
     SUMMARY_MAX_TOKEN: int = 300

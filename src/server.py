@@ -7,13 +7,29 @@ from typing import Annotated, List
 
 import fastapi
 import fastapi_swagger_dark as fsd
-from fastapi import Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .chat import ChatModelWrapper
 from .config import settings
 from .embedding import SentenceTransformerWrapper
+from .openai_compat import (
+    ChatCompletionRequest,
+    ModelInfo,
+    ModelsResponse,
+)
+from .session import SessionManager
 from .summarization import SummarizationModelWrapper
 from .util import condense_log, is_likely_binary
 from .util.rate_limiter import get_in_memory_rate_limiter
@@ -69,6 +85,8 @@ class PromptNames(str, Enum):
 
 embedding_model_wrapper = SentenceTransformerWrapper()
 summarization_model_wrapper: SummarizationModelWrapper | None = None
+chat_model_wrapper: ChatModelWrapper | None = None
+session_manager: SessionManager | None = None
 
 
 @asynccontextmanager
@@ -76,7 +94,7 @@ async def lifespan(app: fastapi.FastAPI):
     """
     Loads the models on application startup and validates configuration.
     """
-    global summarization_model_wrapper
+    global summarization_model_wrapper, chat_model_wrapper, session_manager
 
     # Validate API key configuration
     if not settings.WORKBENCH_API_KEY:
@@ -102,6 +120,19 @@ async def lifespan(app: fastapi.FastAPI):
     # Always try to initialize Gemini client if API key is present
     if settings.GEMINI_API_KEY:
         summarization_model_wrapper.load_gemini_client()
+
+    # Load chat model (GPT-OSS-20B) if enabled
+    if settings.CHAT_MODEL_ENABLED:
+        chat_model_wrapper = ChatModelWrapper()
+        chat_model_wrapper.load_model()
+
+        # Initialize session manager with model for tokenization
+        session_manager = SessionManager(
+            model=chat_model_wrapper.model,
+            max_context=settings.CHAT_N_CTX,
+            sessions_dir="sessions",
+        )
+        logger.info("Session manager initialized")
 
     yield
 
@@ -137,6 +168,10 @@ async def rate_limits():
         "summarize": {
             "calls": settings.SUMMARIZE_RATE_LIMIT_CALLS,
             "seconds": settings.SUMMARIZE_RATE_LIMIT_SECONDS,
+        },
+        "chat": {
+            "calls": settings.CHAT_RATE_LIMIT_CALLS,
+            "seconds": settings.CHAT_RATE_LIMIT_SECONDS,
         },
     }
 
@@ -180,6 +215,23 @@ async def health_check():
         "default_model": settings.GEMINI_DEFAULT_MODEL,
     }
     response["gemini_api"] = gemini_status
+
+    # Check chat model status (GPT-OSS-20B)
+    if settings.CHAT_MODEL_ENABLED:
+        chat_status = {
+            "name": settings.CHAT_MODEL_NAME,
+            "path": settings.CHAT_MODEL_PATH,
+            "status": (
+                "loaded"
+                if chat_model_wrapper and chat_model_wrapper.is_loaded
+                else "not_loaded"
+            ),
+            "context_length": settings.CHAT_N_CTX,
+            "supports_tools": True,
+        }
+        response["chat_model"] = chat_status
+    else:
+        response["chat_model"] = {"status": "disabled"}
 
     return fastapi.responses.JSONResponse(content=response)
 
@@ -418,6 +470,329 @@ async def parse_ast(
 
     parsed_ast = parse_code_to_ast(code, language)
     return parsed_ast
+
+
+# =============================================================================
+# OpenAI-Compatible Chat Endpoints
+# =============================================================================
+
+
+@app.post(
+    "/v1/chat/completions",
+    summary="Chat Completions (OpenAI-compatible)",
+    description="GPT-OSS-20B chat. Supports streaming, tool calling, and sessions.",
+    tags=["OpenAI API"],
+    dependencies=[
+        Depends(get_api_key),
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.CHAT_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.CHAT_RATE_LIMIT_CALLS,
+            )
+        ),
+    ],
+)
+async def chat_completions(
+    request: ChatCompletionRequest,
+    x_session_id: str | None = Header(None, alias="X-Session-Id"),
+):
+    """
+    OpenAI-compatible chat completions endpoint.
+
+    Optional session support via X-Session-Id header:
+    - If provided, prepends stored messages from session
+    - Stores user/assistant messages after completion
+    - Without header, operates stateless (standard OpenAI behavior)
+    """
+    if chat_model_wrapper is None or not chat_model_wrapper.is_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Chat model not loaded. Set CHAT_MODEL_ENABLED=true in .env",
+        )
+
+    # Convert Pydantic messages to dicts
+    request_messages = [msg.model_dump(exclude_none=True) for msg in request.messages]
+
+    # Session handling: prepend stored messages if session specified
+    session = None
+    if x_session_id and session_manager:
+        session = session_manager.get_session(x_session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session not found: {x_session_id}",
+            )
+        # Prepend session history to request messages
+        stored_messages = session_manager.get_messages()
+        messages = stored_messages + request_messages
+        logger.debug(
+            f"Session {x_session_id}: {len(stored_messages)} stored + "
+            f"{len(request_messages)} new messages"
+        )
+    else:
+        messages = request_messages
+
+    # Convert tools if provided
+    tools = None
+    if request.tools:
+        tools = [tool.model_dump() for tool in request.tools]
+
+    try:
+        if request.stream:
+            # Streaming response (SSE)
+            from fastapi.responses import StreamingResponse
+
+            collected_content = []
+
+            async def generate_stream():
+                stream = await run_in_threadpool(
+                    chat_model_wrapper.create_completion,
+                    messages=messages,
+                    max_tokens=request.max_tokens,
+                    temperature=request.temperature,
+                    tools=tools,
+                    tool_choice=request.tool_choice,
+                    stream=True,
+                    include_thinking=request.include_thinking,
+                )
+                import json
+
+                for chunk in stream:
+                    # Collect content for session storage
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    if delta.get("content"):
+                        collected_content.append(delta["content"])
+                    yield f"data: {json.dumps(chunk)}\n\n"
+                yield "data: [DONE]\n\n"
+
+                # Store messages in session after streaming completes
+                if session and session_manager:
+                    # Store user messages from request
+                    for msg in request_messages:
+                        session_manager.add_message(msg)
+                    # Store assistant response
+                    if collected_content:
+                        session_manager.add_message(
+                            {
+                                "role": "assistant",
+                                "content": "".join(collected_content),
+                            }
+                        )
+
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Session-Id": x_session_id or "",
+                },
+            )
+        else:
+            # Non-streaming response
+            response = await run_in_threadpool(
+                chat_model_wrapper.create_completion,
+                messages=messages,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                tools=tools,
+                tool_choice=request.tool_choice,
+                stream=False,
+                include_thinking=request.include_thinking,
+            )
+
+            # Store messages in session
+            if session and session_manager:
+                # Store user messages from request
+                for msg in request_messages:
+                    session_manager.add_message(msg)
+                # Store assistant response
+                assistant_msg = response.get("choices", [{}])[0].get("message", {})
+                if assistant_msg.get("content"):
+                    session_manager.add_message(
+                        {
+                            "role": "assistant",
+                            "content": assistant_msg["content"],
+                        }
+                    )
+
+            return response
+
+    except Exception as e:
+        logger.error(f"Chat completion error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+@app.get(
+    "/v1/models",
+    summary="List Models (OpenAI-compatible)",
+    description="List available models for chat completions.",
+    tags=["OpenAI API"],
+    response_model=ModelsResponse,
+)
+async def list_models():
+    """List available models."""
+    import time
+
+    models = []
+
+    # Add chat model if enabled
+    if (
+        settings.CHAT_MODEL_ENABLED
+        and chat_model_wrapper
+        and chat_model_wrapper.is_loaded
+    ):
+        models.append(
+            ModelInfo(
+                id=settings.CHAT_MODEL_NAME,
+                created=int(time.time()),
+                owned_by="egemma",
+            )
+        )
+
+    return ModelsResponse(data=models)
+
+
+# =============================================================================
+# Session Management Endpoints
+# =============================================================================
+
+
+@app.post(
+    "/v1/sessions",
+    summary="Create Session",
+    description="Create a new chat session. Invalidates any existing session.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def create_session():
+    """Create a new session, invalidating any existing one."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized. Enable chat model.",
+        )
+
+    session = session_manager.create_session()
+    return {
+        "session_id": session.session_id,
+        "max_context": session.max_context,
+        "created_at": session.created_at,
+    }
+
+
+@app.get(
+    "/v1/sessions/current",
+    summary="Get Current Session",
+    description="Get current active session info and token usage.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def get_current_session():
+    """Get current session stats."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized.",
+        )
+
+    session = session_manager.get_session()
+    if session is None:
+        raise HTTPException(status_code=404, detail="No active session")
+
+    return session.to_stats()
+
+
+@app.post(
+    "/v1/sessions/{session_id}/load",
+    summary="Load Session",
+    description="Load/resume a previously saved session by ID.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def load_session(session_id: str):
+    """Load an existing session by ID."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized.",
+        )
+
+    session = session_manager.load_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}",
+        )
+
+    return session.to_stats()
+
+
+@app.get(
+    "/v1/sessions/{session_id}/messages",
+    summary="Get Session Messages",
+    description="Get all messages from a session.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def get_session_messages(session_id: str):
+    """Get all messages stored in a session."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized.",
+        )
+
+    session = session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}",
+        )
+
+    return {
+        "session_id": session.session_id,
+        "message_count": len(session.messages),
+        "token_count": session.token_count,
+        "messages": session.messages,
+    }
+
+
+@app.get(
+    "/v1/sessions",
+    summary="List Sessions",
+    description="List all saved sessions.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def list_sessions():
+    """List all saved sessions."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized.",
+        )
+
+    return {"sessions": session_manager.list_sessions()}
+
+
+@app.post(
+    "/v1/sessions/count-tokens",
+    summary="Count Tokens",
+    description="Count tokens in provided text using the model's tokenizer.",
+    tags=["Sessions"],
+    dependencies=[Depends(get_api_key)],
+)
+async def count_tokens(text: str = Query(..., description="Text to count tokens for")):
+    """Count tokens in text."""
+    if session_manager is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Session manager not initialized.",
+        )
+
+    token_count = session_manager.count_tokens(text)
+    return {"text_length": len(text), "token_count": token_count}
 
 
 @app.get("/", tags=["Root"])

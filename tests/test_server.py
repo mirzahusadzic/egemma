@@ -33,6 +33,8 @@ def client(monkeypatch):
     """Provides a TestClient with mocked models and disabled rate limiting."""
     # Enable local summarization for tests
     monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
+    # Disable chat model to prevent loading real GGUF model
+    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", False)
 
     async def allow_all_requests(request: Request):
         pass
@@ -82,6 +84,8 @@ def caching_test_client(monkeypatch):
     """
     # Enable local summarization for tests
     monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
+    # Disable chat model to prevent loading real GGUF model
+    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", False)
 
     async def allow_all_requests(request: Request):
         pass
@@ -519,3 +523,210 @@ def test_parse_ast_syntax_error(client, mock_api_key_dependency, tmp_path):
         )
         assert response.status_code == 400
         assert "Python syntax error" in response.json()["detail"]
+
+
+# =============================================================================
+# Session Endpoint Tests
+# =============================================================================
+
+
+@pytest.fixture
+def session_client(monkeypatch, tmp_path):
+    """Provides a TestClient with mocked models and session manager enabled."""
+    from src.session import SessionManager
+
+    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
+
+    async def allow_all_requests(request: Request):
+        pass
+
+    app.dependency_overrides[get_in_memory_rate_limiter] = (
+        lambda *args, **kwargs: allow_all_requests
+    )
+
+    with (
+        patch("src.server.embedding_model_wrapper.load_model"),
+        patch("src.server.embedding_model_wrapper.encode") as mock_encode,
+        patch("src.server.SummarizationModelWrapper") as MockSummarizationWrapper,
+        patch("src.server.ChatModelWrapper") as MockChatWrapper,
+        patch("src.server.SessionManager") as MockSessionManager,
+    ):
+        mock_encode.return_value = np.full(768, 0.1)
+
+        mock_summarization_instance = MockSummarizationWrapper.return_value
+        mock_summarization_instance.load_local_model.return_value = None
+
+        # Mock chat model
+        mock_chat_instance = MockChatWrapper.return_value
+        mock_chat_instance.is_loaded = True
+        mock_chat_instance.load_model.return_value = None
+        mock_chat_instance.model = MagicMock()
+        mock_chat_instance.create_completion.return_value = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+
+        # Mock session manager with real behavior
+        real_session_manager = SessionManager(
+            model=None, max_context=4096, sessions_dir=tmp_path / "sessions"
+        )
+        MockSessionManager.return_value = real_session_manager
+
+        # Patch the global session_manager in server module
+        with patch("src.server.session_manager", real_session_manager):
+            with patch("src.server.chat_model_wrapper", mock_chat_instance):
+                monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
+                with TestClient(app) as c:
+                    yield c, real_session_manager
+
+    if get_in_memory_rate_limiter in app.dependency_overrides:
+        del app.dependency_overrides[get_in_memory_rate_limiter]
+
+
+def test_create_session(session_client, mock_api_key_dependency):
+    """Test creating a new session."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.post("/v1/sessions", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "session_id" in data
+    assert data["session_id"].startswith("sess_")
+    assert "max_context" in data
+    assert "created_at" in data
+
+
+def test_get_current_session(session_client, mock_api_key_dependency):
+    """Test getting current session info."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Create a session first
+    create_response = client.post("/v1/sessions", headers=headers)
+    session_id = create_response.json()["session_id"]
+
+    # Get current session
+    response = client.get("/v1/sessions/current", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == session_id
+    assert "message_count" in data
+    assert "token_count" in data
+
+
+def test_get_current_session_no_session(session_client, mock_api_key_dependency):
+    """Test getting current session when none exists."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Don't create a session, directly try to get current
+    # Need to reset the session manager state
+    session_manager._session = None
+
+    response = client.get("/v1/sessions/current", headers=headers)
+    assert response.status_code == 404
+
+
+def test_load_session(session_client, mock_api_key_dependency):
+    """Test loading an existing session."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Create a session
+    create_response = client.post("/v1/sessions", headers=headers)
+    session_id = create_response.json()["session_id"]
+
+    # Create another session (invalidates first)
+    client.post("/v1/sessions", headers=headers)
+
+    # Load the first session
+    response = client.post(f"/v1/sessions/{session_id}/load", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == session_id
+
+
+def test_load_session_not_found(session_client, mock_api_key_dependency):
+    """Test loading non-existent session."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.post("/v1/sessions/nonexistent_session/load", headers=headers)
+    assert response.status_code == 404
+
+
+def test_list_sessions(session_client, mock_api_key_dependency):
+    """Test listing all sessions."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Create multiple sessions
+    client.post("/v1/sessions", headers=headers)
+    client.post("/v1/sessions", headers=headers)
+    client.post("/v1/sessions", headers=headers)
+
+    response = client.get("/v1/sessions", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "sessions" in data
+    assert len(data["sessions"]) == 3
+
+
+def test_get_session_messages(session_client, mock_api_key_dependency):
+    """Test getting messages from a session."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Create session and add messages
+    create_response = client.post("/v1/sessions", headers=headers)
+    session_id = create_response.json()["session_id"]
+
+    # Add messages directly to session manager
+    session_manager.add_message({"role": "user", "content": "Hello"})
+    session_manager.add_message({"role": "assistant", "content": "Hi there!"})
+
+    response = client.get(f"/v1/sessions/{session_id}/messages", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == session_id
+    assert data["message_count"] == 2
+    assert len(data["messages"]) == 2
+    assert data["messages"][0]["content"] == "Hello"
+
+
+def test_get_session_messages_not_found(session_client, mock_api_key_dependency):
+    """Test getting messages from non-existent session."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    response = client.get("/v1/sessions/nonexistent/messages", headers=headers)
+    assert response.status_code == 404
+
+
+def test_count_tokens(session_client, mock_api_key_dependency):
+    """Test token counting endpoint."""
+    client, session_manager = session_client
+    headers = {"Authorization": "Bearer test_api_key"}
+
+    # Create a session first (needed for session manager to be initialized)
+    client.post("/v1/sessions", headers=headers)
+
+    response = client.post(
+        "/v1/sessions/count-tokens",
+        params={"text": "Hello world, this is a test."},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "text_length" in data
+    assert "token_count" in data
+    assert data["text_length"] == 28

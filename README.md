@@ -10,6 +10,8 @@ A high-performance FastAPI workbench that brings the power of Google's Gemma and
 
 * **Intelligent Content Summarization:** Summarize code, logs, and documents using either a local [Gemma-based model](https://deepmind.google/models/gemma/gemma-3) for full control and privacy, or the powerful [Gemini API for text generation](https://ai.google.dev/gemini-api/docs/text-generation) for cutting-edge performance. Summaries can be tailored with different personas (`developer`, `log_analyst`, etc.) for context-aware results.
 
+* **OpenAI-Compatible Chat API:** Run [GPT-OSS-20B](https://huggingface.co/unsloth/gpt-oss-20b-GGUF) locally with full OpenAI API compatibility. Supports streaming responses, tool calling for agentic workflows, and 128K context window - all running on your local hardware with Metal/CUDA acceleration.
+
 Designed for robust local deployment, the server automatically detects and utilizes available hardware acceleration (NVIDIA CUDA, Apple/AMD MPS) and includes features like performance caching, rate limiting, and secure bearer token authentication. It's a powerful tool for integrating advanced language model capabilities into your local development workflow.
 
 ## Important Notice
@@ -31,7 +33,8 @@ Here are some of the standout features of this application:
 
 | Feature                      | Description                                                                                                                                                                                          |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Multi-Model Support**      | Run up to three models simultaneously: a local Gemma for embeddings, and your choice of a local Gemma or the Gemini API for summarization. |
+| **Multi-Model Support**      | Run up to four models simultaneously: Gemma for embeddings, Gemma/Gemini for summarization, and GPT-OSS-20B for chat completions. |
+| **OpenAI-Compatible Chat**   | Full `/v1/chat/completions` endpoint compatible with OpenAI SDKs. Supports streaming, tool calling, persistent sessions, and 128K context window. |
 | **Intelligent Device Detection** | Automatically utilizes available hardware acceleration (CUDA for NVIDIA, MPS for Apple/AMD) with a graceful fallback to CPU for local models.                                                        |
 | **Advanced Embeddings**      | Utilizes the Gemma embedding 300m model with Matryoshka support, allowing for variable dimensions (128, 256, 512, 768) to suit different needs.                                                          |
 | **Prompt Flexibility**       | Use various prompt types (e.g., 'query', 'document') to generate embeddings optimized for specific tasks, with an optional title for document embeddings.                                               |
@@ -68,7 +71,27 @@ Follow these steps to set up the project locally:
 
     > **Note on Gemini SDK:** This project now uses the unified `google-genai` SDK (v0.3.0+) which provides full support for Gemini 2.5 models. The legacy `google-generativeai` SDK is deprecated and will reach end-of-life on August 31, 2025.
 
-3. **Environment Variables:**
+3. **Download Chat Model (Optional):**
+
+    To enable the OpenAI-compatible chat endpoint, download the GPT-OSS-20B model:
+
+    ```bash
+    # Create models directory
+    mkdir -p models
+
+    # Download using huggingface-cli (recommended)
+    huggingface-cli download unsloth/gpt-oss-20b-GGUF \
+      gpt-oss-20b-Q4_K_M.gguf \
+      --local-dir models
+
+    # Or download directly with curl
+    curl -L -o models/gpt-oss-20b-Q4_K_M.gguf \
+      "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-Q4_K_M.gguf"
+    ```
+
+    > **Hardware Requirements:** The Q4_K_M quantization requires ~12GB RAM/VRAM. With 64K context, expect ~16-20GB total. Recommended: 32GB RAM for Apple Silicon or 16GB+ VRAM for CUDA.
+
+4. **Environment Variables:**
     Create a `.env` file in the project root. Add the following configurations:
 
     ```env
@@ -94,6 +117,16 @@ Follow these steps to set up the project locally:
     # --- Hardware Acceleration (Optional) ---
     # Force CPU usage for embeddings (useful for GPU compatibility issues)
     FORCE_CPU=false
+
+    # --- Chat Model Settings (Optional) ---
+    # Enable/disable the chat completions endpoint
+    CHAT_MODEL_ENABLED=true
+    # Path to the GGUF model file
+    CHAT_MODEL_PATH=models/gpt-oss-20b-Q4_K_M.gguf
+    # Context window size (max 131072, recommended 65536 for 32GB RAM)
+    CHAT_N_CTX=65536
+    # GPU layers (-1 = all layers on GPU)
+    CHAT_N_GPU_LAYERS=-1
     ```
 
 * Replace placeholder values with your actual keys.
@@ -194,6 +227,250 @@ curl -X POST "http://localhost:8000/summarize" \
   "language": "Markdown",
   "summary": "THREAT ASSESSMENT: SAFE\n\nDETECTED PATTERNS: None\n\nSPECIFIC CONCERNS: None\n\nRECOMMENDATION: APPROVE\n\nREASONING: Document contains clear security principles with no manipulative patterns detected."
 }
+```
+
+#### Chat Completions (OpenAI-Compatible)
+
+* **Endpoint:** `POST /v1/chat/completions`
+* **Authentication:** Bearer Token (`WORKBENCH_API_KEY`)
+* **Description:** Generate chat completions using GPT-OSS-20B. Fully compatible with OpenAI's API format, supporting streaming and tool calling for agentic workflows.
+
+**Request Body (JSON):**
+
+| Parameter          | Type      | Description                                                                                             |
+| ------------------ | --------- | ------------------------------------------------------------------------------------------------------- |
+| `model`            | `string`  | Model name (use `gpt-oss-20b`).                                                                          |
+| `messages`         | `array`   | Array of message objects with `role` and `content`.                                                      |
+| `max_tokens`       | `integer` | Optional. Maximum tokens to generate. Default: 4096.                                                     |
+| `temperature`      | `float`   | Optional. Sampling temperature (0.0-2.0). Default: 0.7.                                                  |
+| `stream`           | `boolean` | Optional. Enable streaming responses. Default: false.                                                    |
+| `tools`            | `array`   | Optional. List of tool definitions for function calling.                                                 |
+| `include_thinking` | `boolean` | Optional. Include model's internal reasoning in response. Default: false.                                |
+
+**Example Request:**
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss-20b",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Explain quantum computing in simple terms."}
+    ],
+    "max_tokens": 500,
+    "temperature": 0.7
+  }'
+```
+
+**Example Response:**
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "gpt-oss-20b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Quantum computing uses quantum bits (qubits) that can exist in multiple states simultaneously...",
+        "tool_calls": null
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 25,
+    "completion_tokens": 150,
+    "total_tokens": 175
+  }
+}
+```
+
+**Streaming Example:**
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss-20b",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```
+
+##### Extended Thinking (GPT-OSS Harmony Format)
+
+GPT-OSS-20B uses the Harmony format which includes internal reasoning traces. When `include_thinking: true` is set, the model's analysis/reasoning is exposed in the response:
+
+```bash
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss-20b",
+    "messages": [{"role": "user", "content": "What is 2+2?"}],
+    "include_thinking": true
+  }'
+```
+
+**Response with Thinking:**
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "model": "gpt-oss-20b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "2 + 2 = 4",
+        "thinking": "The user is asking for basic arithmetic. 2 + 2 equals 4."
+      },
+      "finish_reason": "stop"
+    }
+  ]
+}
+```
+
+> **Note:** The `thinking` field is only present when both `include_thinking: true` is set AND the model produces reasoning traces. This is fully backward-compatible with standard OpenAI API clients - they will simply ignore the extra field.
+
+**Using with OpenAI SDK:**
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:8000/v1",
+    api_key="your_api_key_here"
+)
+
+response = client.chat.completions.create(
+    model="gpt-oss-20b",
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(response.choices[0].message.content)
+```
+
+#### Session Management
+
+The chat API supports persistent sessions that store conversation history server-side, similar to Claude and Gemini's conversation APIs. This enables multi-turn conversations without the client needing to manage message history.
+
+##### Create Session
+
+* **Endpoint:** `POST /v1/sessions`
+* **Authentication:** Bearer Token (`WORKBENCH_API_KEY`)
+* **Description:** Creates a new chat session. Any existing active session is saved and invalidated.
+
+```bash
+curl -X POST "http://localhost:8000/v1/sessions" \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+**Response:**
+
+```json
+{
+  "session_id": "sess_abc123def456",
+  "max_context": 65536,
+  "created_at": 1234567890.123
+}
+```
+
+##### Use Session with Chat Completions
+
+Pass the `X-Session-Id` header to enable session-based conversations:
+
+```bash
+# First message in session
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -H "X-Session-Id: sess_abc123def456" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "My name is Alice."}]}'
+
+# Follow-up message (history is automatically included)
+curl -X POST "http://localhost:8000/v1/chat/completions" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -H "X-Session-Id: sess_abc123def456" \
+  -H "Content-Type: application/json" \
+  -d '{"messages": [{"role": "user", "content": "What is my name?"}]}'
+```
+
+The server automatically:
+
+* Prepends stored conversation history to your request
+* Stores new user/assistant messages after completion
+* Tracks token usage for context window management
+
+##### Get Session Info
+
+* **Endpoint:** `GET /v1/sessions/current`
+* **Description:** Get current active session stats.
+
+```bash
+curl "http://localhost:8000/v1/sessions/current" \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+**Response:**
+
+```json
+{
+  "session_id": "sess_abc123def456",
+  "message_count": 4,
+  "token_count": 256,
+  "max_context": 65536,
+  "tokens_remaining": 65280,
+  "context_usage": 0.0039
+}
+```
+
+##### Get Session Messages
+
+* **Endpoint:** `GET /v1/sessions/{session_id}/messages`
+* **Description:** Retrieve all messages stored in a session.
+
+```bash
+curl "http://localhost:8000/v1/sessions/sess_abc123def456/messages" \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+##### List All Sessions
+
+* **Endpoint:** `GET /v1/sessions`
+* **Description:** List all saved sessions (sorted by last accessed).
+
+```bash
+curl "http://localhost:8000/v1/sessions" \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+##### Load/Resume Session
+
+* **Endpoint:** `POST /v1/sessions/{session_id}/load`
+* **Description:** Resume a previously saved session.
+
+```bash
+curl -X POST "http://localhost:8000/v1/sessions/sess_abc123def456/load" \
+  -H "Authorization: Bearer your_api_key_here"
+```
+
+##### Count Tokens
+
+* **Endpoint:** `POST /v1/sessions/count-tokens`
+* **Description:** Count tokens in text using the model's tokenizer.
+
+```bash
+curl -X POST "http://localhost:8000/v1/sessions/count-tokens?text=Hello%20world" \
+  -H "Authorization: Bearer your_api_key_here"
 ```
 
 #### Parse AST
@@ -312,13 +589,18 @@ curl -X GET "http://localhost:8000/health"
     "status": "loaded"
   },
   "local_summarization_model": {
-    "name": "stduhpf/google-gemma-3-12b-it-qat-q4_0-gguf-small",
-    "basename": "gemma-3-12b-it-q4_0_s.gguf",
-    "status": "loaded"
+    "status": "disabled"
   },
   "gemini_api": {
     "api_key_set": true,
     "default_model": "gemini-2.5-flash"
+  },
+  "chat_model": {
+    "name": "gpt-oss-20b",
+    "path": "models/gpt-oss-20b-Q4_K_M.gguf",
+    "status": "loaded",
+    "context_length": 65536,
+    "supports_tools": true
   }
 }
 ```
