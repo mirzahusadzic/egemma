@@ -49,8 +49,6 @@ uv.lock
 models
 !src/models/  # Exception: allow src/models/ Python package
 node_modules
-package.json
-package-lock.json
 
 # cognition-cli specific
 .open_cognition

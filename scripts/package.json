@@ -1,0 +1,26 @@
+{
+  "name": "egemma",
+  "version": "1.0.0",
+  "description": "<div align=\"center\"> <img src=\"./docs/assets/egemma-logo.png\" alt=\"eGemma Logo\" width=\"400\"/>",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com-egemma:mirzahusadzic/egemma.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@openai/agents": "^0.3.4",
+    "openai": "^6.10.0",
+    "zod": "^4.1.13"
+  }
+}
