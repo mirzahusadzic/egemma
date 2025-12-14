@@ -26,12 +26,7 @@ class Settings(BaseSettings):
     CHAT_FLASH_ATTN: bool = True  # Enable Flash Attention for Metal
     CHAT_MAX_TOKENS: int = 4096
     CHAT_TEMPERATURE: float = 1.0
-    CHAT_REASONING_EFFORT: str = "low"  # low, medium, high - controls thinking depth
-    # Set to "low" based on production analysis: most tasks (IPC, web fetch,
-    # repo analysis) are tactical execution, not strategic reasoning. Low mode
-    # provides fast, focused responses without overthinking. Higher modes can
-    # add latency/verbosity without improving accuracy for well-scoped prompts
-    # and clear tool orchestration tasks.
+    CHAT_REASONING_EFFORT: str = "high"  # low, medium, high - controls thinking depth
     CHAT_RATE_LIMIT_SECONDS: int = 60
     CHAT_RATE_LIMIT_CALLS: int = 100
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"

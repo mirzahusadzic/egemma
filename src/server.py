@@ -803,6 +803,7 @@ async def create_response(
                 message_item_id = generate_message_id()
                 reasoning_item_id = generate_reasoning_id()
                 usage = ResponseUsage()
+                in_tool_call = False  # Track if we're streaming a tool call
 
                 # Log request for debugging (use DEBUG level to avoid console spam)
                 logger.debug(f"[STREAM] Request to model: {len(messages)} messages")
@@ -850,10 +851,25 @@ async def create_response(
                         # Handle text content
                         content = delta.get("content", "")
                         if content:
+                            # Always collect content for tool call parsing
                             collected_content.append(content)
-                            yield create_text_delta_event(
-                                response_id, content, message_item_id
-                            )
+
+                            # FIX: Don't stream tool call content as text
+                            # Tool calls span multiple chunks, so we need state tracking
+
+                            # Detect start of tool call (commentary channel)
+                            if "<|channel|>commentary" in content:
+                                in_tool_call = True
+
+                            # Detect end of tool call
+                            if "<|end|>" in content or "<|call|>" in content:
+                                in_tool_call = False
+
+                            # Only stream if NOT in a tool call
+                            if not in_tool_call:
+                                yield create_text_delta_event(
+                                    response_id, content, message_item_id
+                                )
 
                         # Note: Tool calls are NOT streamed by llama-cpp.
                         # We parse them from collected_content after streaming.

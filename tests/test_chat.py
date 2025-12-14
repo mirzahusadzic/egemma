@@ -478,3 +478,116 @@ def test_stream_no_duplicate_content():
 
     # Should have exactly "Hello" and " world", no duplicates
     assert content_chunks == ["Hello", " world"]
+
+
+# =============================================================================
+# JSON Repair Tests
+# =============================================================================
+
+
+def test_repair_json_bracket_quote_confusion():
+    """Test repairing "] to " (bracket/quote confusion)."""
+    wrapper = ChatModelWrapper()
+    malformed = '{"command":"git status -s"],"timeout": 120000}'
+    expected = '{"command":"git status -s","timeout": 120000}'
+
+    result = wrapper._repair_json(malformed)
+
+    assert result == expected
+
+
+def test_repair_json_array_with_trailing_comma():
+    """Test removing trailing comma inside arrays."""
+    wrapper = ChatModelWrapper()
+    malformed = '{"flags": ["verbose", "debug",]}'
+    expected = '{"flags": ["verbose", "debug"]}'
+
+    result = wrapper._repair_json(malformed)
+
+    assert result == expected
+
+
+def test_repair_json_trailing_comma():
+    """Test removing trailing commas before } or ]."""
+    wrapper = ChatModelWrapper()
+    malformed = '{"a": 1, "b": 2,}'
+    expected = '{"a": 1, "b": 2}'
+
+    result = wrapper._repair_json(malformed)
+
+    assert result == expected
+
+
+def test_repair_json_multiple_fixes():
+    """Test applying multiple repairs in one pass."""
+    wrapper = ChatModelWrapper()
+    malformed = '{"command":"ls -la"],"timeout": 5000,}'
+    expected = '{"command":"ls -la","timeout": 5000}'
+
+    result = wrapper._repair_json(malformed)
+
+    assert result == expected
+
+
+def test_repair_json_no_changes_needed():
+    """Test that valid JSON is returned unchanged."""
+    wrapper = ChatModelWrapper()
+    valid = '{"command":"git status","timeout": 120000}'
+
+    result = wrapper._repair_json(valid)
+
+    assert result == valid
+
+
+# =============================================================================
+# JSON Repair Integration Tests
+# =============================================================================
+
+
+def test_parse_tool_calls_with_malformed_json_repaired():
+    """Test parsing Harmony tool calls with malformed JSON that gets auto-repaired."""
+    wrapper = ChatModelWrapper()
+    # Malformed: "] instead of "
+    content = (
+        "<|channel|>commentary to=functions.bash "
+        '<|constrain|>json<|message|>{"command":"git status -s"],"timeout": 120000}'
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "bash"
+    # Verify the repaired JSON was parsed correctly
+    args = result[0]["function"]["arguments"]
+    assert "git status -s" in args
+    assert "120000" in args
+
+
+def test_parse_tool_calls_with_trailing_comma_repaired():
+    """Test parsing tool calls with trailing commas that get auto-repaired."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>commentary to=functions.bash "
+        '<|constrain|>json<|message|>{"command":"echo hello","timeout": 5000,}'
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "bash"
+    assert "echo hello" in result[0]["function"]["arguments"]
+
+
+def test_parse_tool_calls_unrepairable_json():
+    """Test that completely invalid JSON returns None even after repair attempts."""
+    wrapper = ChatModelWrapper()
+    content = (
+        "<|channel|>commentary to=functions.bash "
+        "<|constrain|>json<|message|>{this is not json at all!!!"
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is None

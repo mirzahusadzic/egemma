@@ -669,6 +669,52 @@ class ChatModelWrapper:
                             }
                         )
                 except json.JSONDecodeError:
+                    # Attempt to repair common JSON errors from model output
+                    if args_json:
+                        repaired_json = self._repair_json(args_json)
+                        if repaired_json != args_json:
+                            try:
+                                parsed = json.loads(repaired_json)
+                                # Successfully repaired! Process the tool call
+                                if isinstance(parsed, dict) and "function" in parsed:
+                                    nested_func = parsed["function"]
+                                    actual_name = nested_func.get("name", tool_name)
+                                    actual_args = nested_func.get("arguments", "{}")
+                                    if actual_name.startswith("functions."):
+                                        actual_name = actual_name[10:]
+                                    elif actual_name.startswith("tool."):
+                                        actual_name = actual_name[5:]
+                                    tool_calls.append(
+                                        {
+                                            "id": parsed.get(
+                                                "id", f"call_{uuid.uuid4().hex[:8]}"
+                                            ),
+                                            "type": "function",
+                                            "function": {
+                                                "name": actual_name,
+                                                "arguments": (
+                                                    actual_args
+                                                    if isinstance(actual_args, str)
+                                                    else json.dumps(actual_args)
+                                                ),
+                                            },
+                                        }
+                                    )
+                                else:
+                                    # Simple format
+                                    tool_calls.append(
+                                        {
+                                            "id": f"call_{uuid.uuid4().hex[:8]}",
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_name,
+                                                "arguments": repaired_json,
+                                            },
+                                        }
+                                    )
+                                continue
+                            except json.JSONDecodeError:
+                                pass
                     continue
 
         return tool_calls if tool_calls else None
@@ -708,6 +754,29 @@ class ChatModelWrapper:
                     return content[start : i + 1]
 
         return None
+
+    def _repair_json(self, json_str: str) -> str:
+        """
+        Attempt to repair common JSON errors from model output.
+
+        Common errors:
+        1. Mixed brackets/quotes: "] instead of "
+        2. Trailing commas before } or ]
+
+        Returns repaired JSON string (or original if no repairs needed).
+        """
+        import re
+
+        # Fix 1: Replace "] with " (bracket/quote confusion)
+        # Example: {"command":"git status -s"] -> {"command":"git status -s"
+        json_str = re.sub(r'"\]', '"', json_str)
+
+        # Fix 2: Remove trailing commas before } or ]
+        # Example: {"a": 1,} -> {"a": 1}
+        # Example: ["a", "b",] -> ["a", "b"]
+        json_str = re.sub(r",(\s*[}\]])", r"\1", json_str)
+
+        return json_str
 
     def _parse_harmony_response(self, content: str) -> dict:
         """
