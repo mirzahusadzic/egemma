@@ -733,6 +733,17 @@ class ChatModelWrapper:
                             tool_name = None
                             if "command" in parsed:
                                 tool_name = "bash"
+                            elif "file_path" in parsed or "path" in parsed:
+                                # Read tool (file_path, offset, limit)
+                                tool_name = "read"
+                            elif "pattern" in parsed and (
+                                "file" in parsed or "glob" in parsed or "type" in parsed
+                            ):
+                                # Grep tool: {"pattern":"...", "file":"...", ...}
+                                tool_name = "grep"
+                            elif "url" in parsed:
+                                # Web fetch tool: {"url":"...", "prompt":"..."}
+                                tool_name = "web_fetch"
                             elif "function" in parsed or "tool" in parsed:
                                 # Could be a nested tool call format
                                 tool_name = parsed.get(

@@ -677,7 +677,7 @@ def test_parse_prefers_harmony_over_standalone():
     # This content has BOTH Harmony format AND standalone JSON
     # The Harmony format should be detected first
     content = (
-        '<|channel|>commentary to=functions.bash '
+        "<|channel|>commentary to=functions.bash "
         '<|constrain|>json<|message|>{"command":"git status"}<|end|> '
         '{"command":"ls -R","timeout":120}'
     )
@@ -688,3 +688,69 @@ def test_parse_prefers_harmony_over_standalone():
     assert len(result) == 1
     # Should detect the Harmony format tool call (git status), not the standalone one
     assert "git status" in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_read_tool_with_file_path():
+    """Test parsing standalone JSON for read tool with 'file_path' field."""
+    wrapper = ChatModelWrapper()
+    # This is the exact pattern from the latest OpenAI magic log
+    content = '{"file_path":"src/chat.py","offset":0,"limit":400}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "read"
+    assert "src/chat.py" in result[0]["function"]["arguments"]
+    assert '"offset":0' in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_read_tool_with_path():
+    """Test parsing standalone JSON for read tool with 'path' field."""
+    wrapper = ChatModelWrapper()
+    content = '{"path":"README.md","limit":100}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "read"
+    assert "README.md" in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_grep_tool():
+    """Test parsing standalone JSON for grep tool with 'pattern' field."""
+    wrapper = ChatModelWrapper()
+    content = '{"pattern":"TODO","file":"src/main.py","output_mode":"content"}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "grep"
+    assert "TODO" in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_grep_with_glob():
+    """Test parsing standalone JSON for grep tool with glob parameter."""
+    wrapper = ChatModelWrapper()
+    content = '{"pattern":"import","glob":"*.py"}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "grep"
+
+
+def test_parse_standalone_json_web_fetch():
+    """Test parsing standalone JSON for web_fetch tool with 'url' field."""
+    wrapper = ChatModelWrapper()
+    content = '{"url":"https://example.com","prompt":"Get the title"}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "web_fetch"
+    assert "example.com" in result[0]["function"]["arguments"]
