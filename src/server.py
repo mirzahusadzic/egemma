@@ -105,7 +105,7 @@ app = fastapi.FastAPI(
         "hardware acceleration, caching, and rate limiting, plus cloud-offloaded, "
         "persona-driven summarization through Gemini."
     ),
-    version="0.3.0",
+    version="0.4.0",
     docs_url=None,
     lifespan=lifespan,
 )
