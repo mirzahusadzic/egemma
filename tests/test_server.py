@@ -819,3 +819,112 @@ def test_streaming_mixed_text_and_tool_calls(
     assert "<|channel|>commentary" not in full_text
     assert "to=functions.bash" not in full_text
     assert '{"command":"ls"}' not in full_text
+
+
+def test_streaming_suppresses_standalone_json(
+    client, mock_api_key_dependency, monkeypatch
+):
+    """
+    Test that standalone JSON tool calls are NOT streamed as text.
+
+    This tests the fix for the "leak" where standalone JSON like
+    {"command":"git show cffd1ec","timeout": 10000} was appearing
+    in the chat message even though it was also executed as a tool call.
+    """
+    # Enable chat model for this test
+    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
+
+    # Create a mock that returns synchronous generator for streaming
+    def mock_streaming_completion(*args, **kwargs):
+        chunks = [
+            {"choices": [{"delta": {"content": "Let me check: "}}]},
+            {"choices": [{"delta": {"content": '{"command":"'}}]},
+            {"choices": [{"delta": {"content": 'git status",'}}]},
+            {"choices": [{"delta": {"content": '"timeout":5000}'}}]},
+            {"choices": [{"delta": {"content": " Done!"}}]},
+        ]
+        for chunk in chunks:
+            yield chunk
+
+    def mock_create_completion(*args, **kwargs):
+        # Return synchronous generator if stream=True
+        if kwargs.get("stream", False):
+            return mock_streaming_completion(*args, **kwargs)
+        # Return dict if stream=False
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            'Let me check: '
+                            '{"command":"git status","timeout":5000} Done!'
+                        )
+                    }
+                }
+            ],
+            "usage": {},
+        }
+
+    # Create a mock chat model wrapper
+    mock_chat = MagicMock()
+    mock_chat.is_loaded = True
+    mock_chat.create_completion = mock_create_completion
+    mock_chat._parse_tool_calls = MagicMock(
+        return_value=[
+            {
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": '{"command":"git status","timeout":5000}',
+                },
+            }
+        ]
+    )
+
+    # Patch the global chat_model_wrapper in server.py
+    import src.server
+
+    monkeypatch.setattr(src.server, "chat_model_wrapper", mock_chat)
+
+    headers = {"Authorization": "Bearer test_api_key"}
+    request_body = {
+        "input": [{"type": "message", "role": "user", "content": "Check status"}],
+        "model": "test-model",
+        "stream": True,
+    }
+
+    # Make streaming request
+    response = client.post("/v1/responses", json=request_body, headers=headers)
+
+    assert response.status_code == 200
+
+    # Collect all events from the stream
+    events = []
+    for line in response.iter_lines():
+        if line:
+            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            events.append(decoded)
+
+    # Verify text delta events exist
+    text_delta_events = [e for e in events if "output_text.delta" in e]
+
+    import json
+
+    deltas = []
+    for event in text_delta_events:
+        if "data: " in event:
+            data_str = event.split("data: ", 1)[1]
+            data = json.loads(data_str)
+            if "delta" in data:
+                deltas.append(data["delta"])
+
+    full_text = "".join(deltas)
+
+    # Should contain regular text before and after
+    assert "Let me check: " in full_text or "Done!" in full_text
+
+    # Should NOT contain the standalone JSON
+    assert '{"command"' not in full_text
+    assert '"git status"' not in full_text
+    assert '"timeout":5000' not in full_text

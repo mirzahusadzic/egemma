@@ -804,6 +804,7 @@ async def create_response(
                 reasoning_item_id = generate_reasoning_id()
                 usage = ResponseUsage()
                 in_tool_call = False  # Track if we're streaming a tool call
+                json_brace_depth = 0  # Track JSON object depth for standalone JSON
 
                 # Log request for debugging (use DEBUG level to avoid console spam)
                 logger.debug(f"[STREAM] Request to model: {len(messages)} messages")
@@ -857,16 +858,46 @@ async def create_response(
                             # FIX: Don't stream tool call content as text
                             # Tool calls span multiple chunks, so we need state tracking
 
-                            # Detect start of tool call (commentary channel)
+                            # Check if we're currently in a tool call BEFORE processing
+                            was_in_tool_call = in_tool_call
+
+                            # Detect start of Harmony format tool call
                             if "<|channel|>commentary" in content:
                                 in_tool_call = True
 
-                            # Detect end of tool call
+                            # Detect end of Harmony format tool call
                             if "<|end|>" in content or "<|call|>" in content:
                                 in_tool_call = False
 
-                            # Only stream if NOT in a tool call
-                            if not in_tool_call:
+                            # Detect standalone JSON tool calls
+                            # Check for tool call patterns and track JSON depth
+                            if not in_tool_call and (
+                                '{"command"' in content
+                                or '{"file_path"' in content
+                                or '{"path"' in content
+                                or '{"pattern"' in content
+                                or '{"url"' in content
+                                or '{"function"' in content
+                                or '{"tool"' in content
+                            ):
+                                # Looks like start of standalone JSON tool call
+                                in_tool_call = True
+                                was_in_tool_call = True  # Suppress entire chunk
+                                json_brace_depth = 0
+
+                            # Track brace depth for JSON objects
+                            if json_brace_depth >= 0:
+                                for char in content:
+                                    if char == "{":
+                                        json_brace_depth += 1
+                                    elif char == "}":
+                                        json_brace_depth -= 1
+                                        if json_brace_depth == 0 and in_tool_call:
+                                            # JSON object complete
+                                            in_tool_call = False
+
+                            # Only stream if we were NOT in a tool call at the start
+                            if not was_in_tool_call and not in_tool_call:
                                 yield create_text_delta_event(
                                     response_id, content, message_item_id
                                 )
