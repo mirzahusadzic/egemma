@@ -272,7 +272,7 @@ async function runTest(query, expectedTool) {
   console.log('-'.repeat(60));
 
   try {
-    const result = await run(agent, query, { stream: true });
+    const result = await run(agent, query, { stream: true, maxTurns: 30 });
 
     // Consume the stream and collect ALL tool calls (not just last)
     const toolsCalled = [];
