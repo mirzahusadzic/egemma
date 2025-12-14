@@ -163,7 +163,7 @@ class ChatModelWrapper:
             max_tokens=max_tokens,
             temperature=temperature,
             tools=tools,  # Let llama.cpp apply the chat template with tools
-            stop=["<|return|>"],
+            stop=None,
             stream=False,  # Batch mode, not streaming
             min_p=0.05,  # Prevents degenerate sampling
             top_p=1.0,  # Unsloth recommendation
@@ -271,7 +271,7 @@ class ChatModelWrapper:
             max_tokens=max_tokens,
             temperature=temperature,
             tools=tools,  # Let llama.cpp apply the chat template with tools
-            stop=["<|return|>"],
+            stop=None,
             stream=True,
             min_p=0.05,  # Prevents degenerate sampling
             top_p=1.0,  # Unsloth recommendation
