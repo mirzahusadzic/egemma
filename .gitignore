@@ -47,6 +47,7 @@ uv.lock
 
 # Node specific
 models
+!src/models/  # Exception: allow src/models/ Python package
 node_modules
 package.json
 package-lock.json
