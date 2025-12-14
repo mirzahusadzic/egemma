@@ -7,7 +7,8 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from src.server import EmbeddingDimensions, app, get_api_key, settings
+from src.routers.embed import EmbeddingDimensions
+from src.server import app, get_api_key, settings
 from src.util.rate_limiter import get_in_memory_rate_limiter
 
 
@@ -49,19 +50,24 @@ def client(monkeypatch):
         lambda *args, **kwargs: allow_all_requests
     )
 
-    # Apply patches for model loading *before* TestClient is initialized
+    # Mock the model wrapper classes and their methods
     with (
-        patch("src.server.embedding_model_wrapper.load_model") as mock_embedding_load,
-        patch("src.server.embedding_model_wrapper.encode") as mock_embedding_encode,
+        patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
         patch("src.server.SummarizationModelWrapper") as MockSummarizationWrapper,
+        patch("src.server.ConversationManager"),
     ):
-        mock_embedding_load.return_value = None
-        mock_embedding_encode.return_value = np.full(768, 0.1)
+        # Setup embedding mock
+        mock_embedding_instance = MockEmbeddingWrapper.return_value
+        mock_embedding_instance.load_model.return_value = None
+        mock_embedding_instance.encode.return_value = np.full(768, 0.1)
+        mock_embedding_instance.model = MagicMock()  # Simulate loaded model
 
+        # Setup summarization mock
         mock_summarization_instance = MockSummarizationWrapper.return_value
         mock_summarization_instance.load_local_model.return_value = None
         mock_summarization_instance.load_gemini_client.return_value = None
         mock_summarization_instance.summarize.return_value = "This is a summary."
+        mock_summarization_instance.model = MagicMock()  # Simulate loaded model
 
         # Now create TestClient, so lifespan runs with mocks active
         with TestClient(app) as c:
@@ -101,9 +107,15 @@ def caching_test_client(monkeypatch):
     )
 
     with (
-        patch("src.server.embedding_model_wrapper.load_model"),
+        patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
         patch("llama_cpp.Llama.from_pretrained") as mock_from_pretrained,
+        patch("src.server.ConversationManager"),
     ):
+        # Setup embedding mock
+        mock_embedding_instance = MockEmbeddingWrapper.return_value
+        mock_embedding_instance.load_model.return_value = None
+        mock_embedding_instance.model = MagicMock()
+
         mock_llama_instance = MagicMock()
         mock_llama_instance.create_chat_completion.return_value = {
             "choices": [{"message": {"content": "This is a cached summary."}}]
@@ -236,14 +248,14 @@ def test_encoder_cache_hit(client, mock_api_key_dependency, tmp_path):
     (tmp_path / "test.txt").write_text(text_to_embed)
 
     with patch(
-        "src.server.embedding_model_wrapper.encode"
+        "src.routers.embed.embedding_model_wrapper.encode"
     ) as mock_model_wrapper_encode:
         mock_model_wrapper_encode.return_value = np.full(
             768, 0.1
         )  # Mock the return value
 
         # Clear the cache before the test to ensure a clean state
-        from src.server import PromptNames, cached_encode
+        from src.routers.embed import PromptNames, cached_encode
 
         cached_encode.cache_clear()
 
@@ -291,11 +303,14 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency, tmp_path)
     text_to_embed = "test text"
     (tmp_path / "test.txt").write_text(text_to_embed)
 
-    from src.server import cached_encode
+    from src.routers.embed import cached_encode
 
     cached_encode.cache_clear()
 
-    with patch("src.server.embedding_model_wrapper.encode") as mock_encode:
+    # Patch the encode function in the router's cached_encode
+    import src.routers.embed as embed_router
+
+    with patch.object(embed_router.embedding_model_wrapper, "encode") as mock_encode:
         mock_encode.side_effect = RuntimeError("Model not loaded")
         with open(tmp_path / "test.txt", "rb") as f:
             response = client.post(
@@ -341,7 +356,12 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
     headers = {"Authorization": "Bearer test_api_key"}
     (tmp_path / "test.py").write_text("def hello(): return 'world'")
 
-    with patch("src.server.summarization_model_wrapper.summarize") as mock_summarize:
+    # Patch the summarize method on the wrapper instance
+    import src.routers.summarize as summarize_router
+
+    with patch.object(
+        summarize_router.summarization_model_wrapper, "summarize"
+    ) as mock_summarize:
         mock_summarize.side_effect = RuntimeError("Model not loaded")
         with open(tmp_path / "test.py", "rb") as f:
             response = client.post(
@@ -376,7 +396,7 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
     (tmp_path / "test.py").write_text(file_content)
 
     # Clear the cache on the method before the test
-    from src.server import summarization_model_wrapper
+    from src.routers.summarize import summarization_model_wrapper
 
     summarization_model_wrapper._summarize_local.cache_clear()
 
@@ -594,10 +614,10 @@ def test_streaming_suppresses_tool_calls(client, mock_api_key_dependency, monkey
         ]
     )
 
-    # Patch the global chat_model_wrapper in server.py
-    import src.server
+    # Patch the global chat_model_wrapper in responses.py
+    import src.routers.responses
 
-    monkeypatch.setattr(src.server, "chat_model_wrapper", mock_chat)
+    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
 
     headers = {"Authorization": "Bearer test_api_key"}
     request_body = {
@@ -664,10 +684,10 @@ def test_streaming_allows_regular_text(client, mock_api_key_dependency, monkeypa
     mock_chat.create_completion = mock_create_completion
     mock_chat._parse_tool_calls = MagicMock(return_value=None)
 
-    # Patch the global chat_model_wrapper in server.py
-    import src.server
+    # Patch the global chat_model_wrapper in responses.py
+    import src.routers.responses
 
-    monkeypatch.setattr(src.server, "chat_model_wrapper", mock_chat)
+    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
 
     headers = {"Authorization": "Bearer test_api_key"}
     request_body = {
@@ -773,10 +793,10 @@ def test_streaming_mixed_text_and_tool_calls(
         ]
     )
 
-    # Patch the global chat_model_wrapper in server.py
-    import src.server
+    # Patch the global chat_model_wrapper in responses.py
+    import src.routers.responses
 
-    monkeypatch.setattr(src.server, "chat_model_wrapper", mock_chat)
+    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
 
     headers = {"Authorization": "Bearer test_api_key"}
     request_body = {
@@ -882,10 +902,10 @@ def test_streaming_suppresses_standalone_json(
         ]
     )
 
-    # Patch the global chat_model_wrapper in server.py
-    import src.server
+    # Patch the global chat_model_wrapper in responses.py
+    import src.routers.responses
 
-    monkeypatch.setattr(src.server, "chat_model_wrapper", mock_chat)
+    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
 
     headers = {"Authorization": "Bearer test_api_key"}
     request_body = {

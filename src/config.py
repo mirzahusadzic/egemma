@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     CHAT_REASONING_EFFORT: str = "high"  # low, medium, high - controls thinking depth
     CHAT_RATE_LIMIT_SECONDS: int = 60
     CHAT_RATE_LIMIT_CALLS: int = 100
+    # Conversation API rate limiting (generous limits for stateful operations)
+    CONVERSATION_RATE_LIMIT_SECONDS: int = 60
+    CONVERSATION_RATE_LIMIT_CALLS: int = 100
     SUMMARY_MODEL_NAME: str = "google/gemma-3-12b-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-3-12b-it-q4_0.gguf"
     SUMMARY_MAX_TOKEN: int = 300

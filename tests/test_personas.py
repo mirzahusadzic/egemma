@@ -1,6 +1,6 @@
 import pytest
 
-from src.summarization import _get_persona_system_message
+from src.models.summarization import _get_persona_system_message
 
 
 @pytest.fixture(scope="function")

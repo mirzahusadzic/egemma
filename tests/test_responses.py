@@ -2,7 +2,7 @@
 
 import json
 
-from src.responses import (
+from src.api.openai.responses import (
     Response,
     ResponseInputItem,
     ResponseOutputFunctionCall,

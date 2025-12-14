@@ -1,15 +1,19 @@
 """Tests for Conversations API."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from src.api.openai.conversations import (
+    Conversation,
+    ConversationItem,
+    ConversationManager,
+)
 from src.config import get_conversations_dir
-from src.conversations import Conversation, ConversationItem, ConversationManager
 from src.server import app, get_api_key, settings
 from src.util.rate_limiter import get_in_memory_rate_limiter
 
@@ -70,18 +74,23 @@ def client(monkeypatch, tmp_path):
         "src.server.get_conversations_dir", lambda model: str(test_conv_dir)
     )
 
+    # Mock the model wrapper classes
     with (
-        patch("src.server.embedding_model_wrapper.load_model") as mock_embedding_load,
-        patch("src.server.embedding_model_wrapper.encode") as mock_embedding_encode,
+        patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
         patch("src.server.SummarizationModelWrapper") as MockSummarizationWrapper,
     ):
-        mock_embedding_load.return_value = None
-        mock_embedding_encode.return_value = np.full(768, 0.1)
+        # Setup embedding mock
+        mock_embedding_instance = MockEmbeddingWrapper.return_value
+        mock_embedding_instance.load_model.return_value = None
+        mock_embedding_instance.encode.return_value = np.full(768, 0.1)
+        mock_embedding_instance.model = MagicMock()
 
+        # Setup summarization mock
         mock_summarization_instance = MockSummarizationWrapper.return_value
         mock_summarization_instance.load_local_model.return_value = None
         mock_summarization_instance.load_gemini_client.return_value = None
         mock_summarization_instance.summarize.return_value = "This is a summary."
+        mock_summarization_instance.model = MagicMock()
 
         with TestClient(app) as c:
             yield c

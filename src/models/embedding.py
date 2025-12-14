@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from src.config import settings
+from ..config import settings
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer

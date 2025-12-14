@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from src.summarization import SummarizationModelWrapper
+from src.models.summarization import SummarizationModelWrapper
 
 
 def test_summarization_wrapper_init():
@@ -35,7 +35,7 @@ def test_load_gemini_client_with_api_key(monkeypatch):
     wrapper = SummarizationModelWrapper()
 
     with patch("google.genai.Client") as mock_client:
-        with patch("src.summarization.settings", settings):
+        with patch("src.models.summarization.settings", settings):
             wrapper.load_gemini_client()
 
         assert wrapper.gemini_client is not None
@@ -46,7 +46,7 @@ def test_load_gemini_client_without_api_key():
     """Test loading Gemini client when API key is not set."""
     wrapper = SummarizationModelWrapper()
 
-    with patch("src.summarization.settings") as mock_settings:
+    with patch("src.models.summarization.settings") as mock_settings:
         mock_settings.GEMINI_API_KEY = None
         wrapper.load_gemini_client()
 

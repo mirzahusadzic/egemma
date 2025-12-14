@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 from llama_cpp import Llama
 
-from .config import settings
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 

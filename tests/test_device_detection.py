@@ -1,4 +1,4 @@
-from src.embedding import _get_optimal_device
+from src.models.embedding import _get_optimal_device
 
 
 def test_get_optimal_device_force_cpu(mocker):

@@ -13,7 +13,7 @@ from typing import Iterator
 
 from llama_cpp import Llama
 
-from src.config import settings
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 

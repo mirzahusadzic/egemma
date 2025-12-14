@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.chat import ChatModelWrapper
+from src.models.llm import ChatModelWrapper
 
 
 def test_chat_wrapper_init():
@@ -31,7 +31,7 @@ def test_load_model():
     """Test loading the GGUF model with M3-optimized settings."""
     wrapper = ChatModelWrapper()
 
-    with patch("src.chat.Llama") as mock_llama:
+    with patch("src.models.llm.Llama") as mock_llama:
         mock_model = MagicMock()
         mock_llama.return_value = mock_model
 
@@ -284,7 +284,7 @@ def test_completion_default_values():
         "usage": {},
     }
 
-    with patch("src.chat.settings") as mock_settings:
+    with patch("src.models.llm.settings") as mock_settings:
         mock_settings.CHAT_MAX_TOKENS = 2048
         mock_settings.CHAT_TEMPERATURE = 0.5
 
