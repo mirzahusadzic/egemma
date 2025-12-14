@@ -856,7 +856,7 @@ def test_streaming_suppresses_standalone_json(
                 {
                     "message": {
                         "content": (
-                            'Let me check: '
+                            "Let me check: "
                             '{"command":"git status","timeout":5000} Done!'
                         )
                     }
