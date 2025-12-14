@@ -591,3 +591,100 @@ def test_parse_tool_calls_unrepairable_json():
     result = wrapper._parse_tool_calls(content)
 
     assert result is None
+
+
+# =============================================================================
+# Standalone JSON Detection Tests (Format 3)
+# =============================================================================
+
+
+def test_parse_standalone_json_with_command():
+    """Test parsing standalone JSON with 'command' field (bash tool)."""
+    wrapper = ChatModelWrapper()
+    # This is the exact pattern from the OpenAI magic log
+    content = '{"command":"ls -R","timeout":120}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "bash"
+    assert "ls -R" in result[0]["function"]["arguments"]
+    assert "120" in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_with_text_prefix():
+    """Test parsing standalone JSON when there's text before it."""
+    wrapper = ChatModelWrapper()
+    content = 'Let me run this command: {"command":"git status","timeout":5000}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "bash"
+    assert "git status" in result[0]["function"]["arguments"]
+
+
+def test_parse_standalone_json_with_function_field():
+    """Test parsing standalone JSON with 'function' field."""
+    wrapper = ChatModelWrapper()
+    content = '{"function":"read_file","arguments":{"path":"/tmp/test.txt"}}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "read_file"
+
+
+def test_parse_standalone_json_with_tool_field():
+    """Test parsing standalone JSON with 'tool' field."""
+    wrapper = ChatModelWrapper()
+    content = '{"tool":"grep","pattern":"TODO","file":"README.md"}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == "grep"
+
+
+def test_parse_standalone_json_no_tool_indicators():
+    """Test that standalone JSON without tool indicators returns None."""
+    wrapper = ChatModelWrapper()
+    # Just a regular JSON object with no tool-related fields
+    content = '{"status":"success","count":42,"message":"hello"}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is None
+
+
+def test_parse_standalone_json_invalid():
+    """Test that invalid standalone JSON returns None."""
+    wrapper = ChatModelWrapper()
+    content = '{"command":"ls" this is broken}'
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is None
+
+
+def test_parse_prefers_harmony_over_standalone():
+    """Test that Harmony format takes precedence over standalone JSON."""
+    wrapper = ChatModelWrapper()
+    # This content has BOTH Harmony format AND standalone JSON
+    # The Harmony format should be detected first
+    content = (
+        '<|channel|>commentary to=functions.bash '
+        '<|constrain|>json<|message|>{"command":"git status"}<|end|> '
+        '{"command":"ls -R","timeout":120}'
+    )
+
+    result = wrapper._parse_tool_calls(content)
+
+    assert result is not None
+    assert len(result) == 1
+    # Should detect the Harmony format tool call (git status), not the standalone one
+    assert "git status" in result[0]["function"]["arguments"]

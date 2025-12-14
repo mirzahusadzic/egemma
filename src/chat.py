@@ -717,6 +717,42 @@ class ChatModelWrapper:
                                 pass
                     continue
 
+        # Format 3: Detect standalone JSON that looks like a tool call
+        # Example: {"command":"ls -R","timeout":120}
+        # This happens when the model outputs raw JSON without markers
+        if not tool_calls:
+            try:
+                # Try to find a JSON object in the content
+                start = content.find("{")
+                if start >= 0:
+                    args_json = self._extract_balanced_json(content, start)
+                    if args_json:
+                        parsed = json.loads(args_json)
+                        if isinstance(parsed, dict):
+                            # Detect tool type from structure
+                            tool_name = None
+                            if "command" in parsed:
+                                tool_name = "bash"
+                            elif "function" in parsed or "tool" in parsed:
+                                # Could be a nested tool call format
+                                tool_name = parsed.get(
+                                    "function", parsed.get("tool", None)
+                                )
+
+                            if tool_name:
+                                tool_calls.append(
+                                    {
+                                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": args_json,
+                                        },
+                                    }
+                                )
+            except (json.JSONDecodeError, ValueError):
+                pass
+
         return tool_calls if tool_calls else None
 
     def _extract_balanced_json(self, content: str, start: int) -> str | None:
