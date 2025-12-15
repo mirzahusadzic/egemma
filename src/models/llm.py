@@ -165,9 +165,9 @@ class ChatModelWrapper:
             tools=tools,  # Let llama.cpp apply the chat template with tools
             stop=None,
             stream=False,  # Batch mode, not streaming
-            min_p=0.05,  # Prevents degenerate sampling
-            top_p=1.0,  # Unsloth recommendation
-            top_k=40,  # Adds diversity (consistent across both modes)
+            min_p=settings.CHAT_MIN_P,
+            top_p=settings.CHAT_TOP_P,
+            top_k=settings.CHAT_TOP_K,
         )
 
         # Parse Harmony format response
@@ -273,9 +273,9 @@ class ChatModelWrapper:
             tools=tools,  # Let llama.cpp apply the chat template with tools
             stop=None,
             stream=True,
-            min_p=0.05,  # Prevents degenerate sampling
-            top_p=1.0,  # Unsloth recommendation
-            top_k=40,  # Adds diversity (consistent across both modes)
+            min_p=settings.CHAT_MIN_P,
+            top_p=settings.CHAT_TOP_P,
+            top_k=settings.CHAT_TOP_K,
         )
 
         # Track Harmony format state

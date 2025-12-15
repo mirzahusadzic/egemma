@@ -3,8 +3,9 @@
 <div align="center">
 <img src="./docs/assets/egemma-logo.png" alt="eGemma Logo" width="400"/>
 
-A unified API server for embeddings, summarization, and chat completions.
-**Fully compatible with OpenAI Agent SDK** - run powerful AI models locally.
+**Local AI workbench** with agent tool calling, chained reasoning, and o-series-style thinking.
+Embeddings, agents, and AST parsing - the trinity for verifiable AI infrastructure.
+**OpenAI Agent SDK compatible** - run powerful reasoning models locally.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -15,7 +16,7 @@ A unified API server for embeddings, summarization, and chat completions.
 
 | Capability | Model | Description |
 |------------|-------|-------------|
-| **Chat/Agents** | GPT-OSS-20B | OpenAI Agent SDK compatible, 128K context, tool calling |
+| **Chat/Agents** | GPT-OSS | OpenAI Agent SDK compatible, 128K context, tool calling |
 | **Embeddings** | Gemma 300M | Matryoshka support (128-768 dims), optimized prompts |
 | **Summarization** | Gemma 12B / Gemini API | Code, logs, docs with persona-based analysis |
 
@@ -198,7 +199,7 @@ Customizable system prompts in `personas/` directory:
 |-------|----------|-------|
 | Embeddings (Gemma 300M) | 1GB | CPU or GPU |
 | Summarization (Gemma 12B) | 8GB | GPU recommended |
-| Chat (GPT-OSS-20B Q4) | 12-20GB | 32GB RAM (Apple) or 16GB VRAM (CUDA) |
+| Chat (GPT-OSS-20B F16) | 12-20GB | 32GB RAM (Apple) or 16GB VRAM (CUDA) |
 
 ## Notice
 

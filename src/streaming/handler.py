@@ -22,6 +22,7 @@ from ..api.openai.responses import (
     generate_reasoning_id,
 )
 from ..models.llm import ChatModelWrapper
+from ..util import sanitize_thinking
 
 logger = logging.getLogger(__name__)
 
@@ -124,10 +125,14 @@ async def generate_streaming_response(
             # Handle reasoning/thinking (GPT-OSS Harmony -> OpenAI o-series)
             thinking = delta.get("thinking", "")
             if thinking:
-                collected_thinking.append(thinking)
-                yield create_reasoning_delta_event(
-                    response_id, thinking, reasoning_item_id
-                )
+                # Strip Harmony format directives from thinking text
+                cleaned_thinking = sanitize_thinking(thinking)
+                # Only emit non-empty thinking after sanitization
+                if cleaned_thinking:
+                    collected_thinking.append(cleaned_thinking)
+                    yield create_reasoning_delta_event(
+                        response_id, cleaned_thinking, reasoning_item_id
+                    )
 
             # Handle text content
             content = delta.get("content", "")
