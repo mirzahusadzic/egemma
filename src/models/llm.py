@@ -14,6 +14,7 @@ from typing import Iterator
 from llama_cpp import Llama
 
 from ..config import settings
+from ..util.harmony_format import format_conversation
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +80,36 @@ class ChatModelWrapper:
             temperature if temperature is not None else settings.CHAT_TEMPERATURE
         )
 
-        # Build the prompt with tool definitions if provided
-        formatted_messages = self._format_messages_with_tools(messages, tools)
+        # Format conversation using proper Harmony format
+        # Extract instructions from system message if present
+        instructions = None
+        for msg in messages:
+            if msg["role"] == "system":
+                instructions = msg.get("content", "")
+                break
+
+        # Format using Harmony protocol
+        harmony_prompt = format_conversation(
+            messages=messages,
+            instructions=instructions,
+            tools=tools,
+            reasoning_effort=settings.CHAT_REASONING_EFFORT,
+        )
+
+        # Debug: Log the formatted Harmony prompt
+        logger.debug("=" * 80)
+        logger.debug("HARMONY FORMATTED PROMPT:")
+        logger.debug("=" * 80)
+        logger.debug(harmony_prompt)
+        logger.debug("=" * 80)
 
         if stream:
             return self._stream_completion(
-                formatted_messages, max_tokens, temperature, tools, include_thinking
+                harmony_prompt, max_tokens, temperature, tools, include_thinking
             )
         else:
             return self._batch_completion(
-                formatted_messages, max_tokens, temperature, tools, include_thinking
+                harmony_prompt, max_tokens, temperature, tools, include_thinking
             )
 
     def _format_messages_with_tools(
@@ -150,28 +171,33 @@ class ChatModelWrapper:
 
     def _batch_completion(
         self,
-        messages: list[dict],
+        prompt: str,
         max_tokens: int,
         temperature: float,
         tools: list[dict] | None,
         include_thinking: bool = False,
     ) -> dict:
-        """Generate a non-streaming completion."""
-        # Pass tools to llama.cpp so it can apply the Harmony template automatically
-        response = self.model.create_chat_completion(
-            messages=messages,
+        """Generate a non-streaming completion using Harmony-formatted prompt."""
+        # Use create_completion with raw Harmony-formatted prompt
+        # Stop tokens for Harmony protocol
+        # Note: <|end|> is NOT a stop token - it separates messages (e.g., analysis -> commentary)
+        # Only <|return|> (done) and <|call|> (tool call) should stop inference
+        stop_tokens = ["<|return|>", "<|call|>"]
+
+        response = self.model.create_completion(
+            prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
-            tools=tools,  # Let llama.cpp apply the chat template with tools
-            stop=None,
-            stream=False,  # Batch mode, not streaming
+            stop=stop_tokens,
+            stream=False,
             min_p=settings.CHAT_MIN_P,
             top_p=settings.CHAT_TOP_P,
             top_k=settings.CHAT_TOP_K,
         )
 
         # Parse Harmony format response
-        raw_content = response["choices"][0]["message"]["content"]
+        # create_completion returns "text" not "message"
+        raw_content = response["choices"][0]["text"]
         parsed = self._parse_harmony_response(raw_content)
         content = parsed["content"]
         thinking = parsed["thinking"]
@@ -193,13 +219,11 @@ class ChatModelWrapper:
         if completion_tokens == 0 and content:
             completion_tokens = self._count_tokens(content)
 
-        # Determine finish_reason
-        # - tool_calls: model requested tool execution
-        # - length: max_tokens was reached
-        # - stop: normal completion
+        # Determine finish_reason based on stop reason
+        stop_reason = response["choices"][0].get("finish_reason", "stop")
         if tool_calls:
             finish_reason = "tool_calls"
-        elif completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
+        elif stop_reason == "length":
             finish_reason = "length"
         else:
             finish_reason = "stop"
@@ -207,8 +231,7 @@ class ChatModelWrapper:
         prompt_tokens = response.get("usage", {}).get("prompt_tokens", 0)
         if prompt_tokens == 0:
             # Estimate prompt tokens if not provided
-            prompt_text = "".join(str(msg.get("content", "")) for msg in messages)
-            prompt_tokens = self._count_tokens(prompt_text)
+            prompt_tokens = self._count_tokens(prompt)
 
         result = {
             "id": completion_id,
@@ -241,7 +264,7 @@ class ChatModelWrapper:
 
     def _stream_completion(
         self,
-        messages: list[dict],
+        prompt: str,
         max_tokens: int,
         temperature: float,
         tools: list[dict] | None,
@@ -261,17 +284,25 @@ class ChatModelWrapper:
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
         created = int(time.time())
 
-        # Estimate prompt tokens from input messages
-        prompt_text = "".join(str(msg.get("content", "")) for msg in messages)
-        prompt_tokens = self._count_tokens(prompt_text)
+        # Estimate prompt tokens from input prompt
+        prompt_tokens = self._count_tokens(prompt)
 
-        # Pass tools to llama.cpp so it can apply the Harmony template automatically
-        stream = self.model.create_chat_completion(
-            messages=messages,
+        # Stop tokens for Harmony protocol
+        # Note: <|end|> is NOT a stop token - it separates messages (e.g., analysis -> commentary)
+        # Only <|return|> (done) and <|call|> (tool call) should stop inference
+        stop_tokens = ["<|return|>", "<|call|>"]
+
+        logger.debug("[STREAM] Starting streaming completion")
+        logger.debug(f"[STREAM] Max tokens: {max_tokens}, Temperature: {temperature}")
+        logger.debug(f"[STREAM] Stop tokens: {stop_tokens}")
+        logger.debug(f"[STREAM] Include thinking: {include_thinking}")
+
+        # Use create_completion with raw Harmony-formatted prompt
+        stream = self.model.create_completion(
+            prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
-            tools=tools,  # Let llama.cpp apply the chat template with tools
-            stop=None,
+            stop=stop_tokens,
             stream=True,
             min_p=settings.CHAT_MIN_P,
             top_p=settings.CHAT_TOP_P,
@@ -291,17 +322,21 @@ class ChatModelWrapper:
         completion_tokens = 0
         total_content_chars = 0
 
+        chunk_count = 0
         for chunk in stream:
-            delta = chunk["choices"][0].get("delta", {})
+            chunk_count += 1
+            # create_completion returns "text" directly in streaming mode
             finish_reason = chunk["choices"][0].get("finish_reason")
-            content = delta.get("content", "")
+            content = chunk["choices"][0].get("text", "")
 
             if content:
+                logger.debug(f"[STREAM CHUNK {chunk_count}] Content: {repr(content)}")
                 buffer += content
 
                 # Check for Harmony format markers
-                if "<|channel|>" in buffer:
+                if "<|channel|>" in buffer and not harmony_detected:
                     harmony_detected = True
+                    logger.debug("[STREAM] Harmony format detected in buffer")
 
                 if harmony_detected:
                     # Harmony format parsing
@@ -312,13 +347,16 @@ class ChatModelWrapper:
                         or "<|channel|>analysis<|message|>" in buffer
                     ) and not in_thinking:
                         in_thinking = True
+                        logger.debug("[STREAM] Entering ANALYSIS channel (thinking)")
                         # Handle both full and partial markers for robustness
                         if "<|start|>assistant<|channel|>analysis<|message|>" in buffer:
                             buffer = buffer.split(
                                 "<|start|>assistant<|channel|>analysis<|message|>"
                             )[-1]
+                            logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
                         else:
                             buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
+                            logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
 
                     # Check for final channel OR commentary channel (tool calls)
                     # Tool calls: <|channel|>commentary to=functions.X ...
@@ -331,6 +369,10 @@ class ChatModelWrapper:
                             and "<|message|>" in buffer
                         )
                     ):
+                        if "<|channel|>final<|message|>" in buffer:
+                            logger.debug("[STREAM] Entering FINAL channel")
+                        else:
+                            logger.debug("[STREAM] Entering COMMENTARY channel (tool call)")
                         # Extract tool call prefix for commentary channel
                         # IMPORTANT: Preserve full Harmony format for parser
                         # Template line 297:
@@ -475,15 +517,21 @@ class ChatModelWrapper:
                         "created": created,
                         "model": self.model_name,
                         "choices": [
-                            {"index": 0, "delta": delta, "finish_reason": None}
+                            {
+                                "index": 0,
+                                "delta": {"content": content},
+                                "finish_reason": None,
+                            }
                         ],
                     }
 
             if finish_reason:
                 # For Harmony format that didn't complete cleanly, emit buffered
                 if harmony_detected and in_thinking and not thinking_emitted:
-                    parsed = self._parse_harmony_response(buffer)
-                    if include_thinking and parsed["thinking"]:
+                    # Buffer contains raw thinking content (markers already stripped)
+                    # Emit it directly as thinking without parsing
+                    logger.debug(f"[STREAM] Stream ended in thinking mode, emitting buffer as thinking: {repr(buffer[:100])}")
+                    if include_thinking and buffer:
                         yield {
                             "id": completion_id,
                             "object": "chat.completion.chunk",
@@ -492,26 +540,14 @@ class ChatModelWrapper:
                             "choices": [
                                 {
                                     "index": 0,
-                                    "delta": {"thinking": parsed["thinking"]},
+                                    "delta": {"thinking": buffer},
                                     "finish_reason": None,
                                 }
                             ],
                         }
-                    if parsed["content"] and parsed["content"] != buffer:
-                        total_content_chars += len(parsed["content"])
-                        yield {
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": self.model_name,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"content": parsed["content"]},
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
+                        thinking_emitted = True
+                        # Clear buffer after emitting thinking
+                        buffer = ""
 
                 # Emit any remaining buffer content when in_final mode
                 # This handles tool calls that arrived in the same chunk as

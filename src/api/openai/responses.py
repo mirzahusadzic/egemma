@@ -11,6 +11,7 @@ Key Features:
 - Token usage tracking
 
 Reference: https://platform.openai.com/docs/api-reference/responses
+           https://cookbook.openai.com/articles/openai-harmony
 """
 
 from __future__ import annotations
@@ -237,6 +238,31 @@ def parse_input_to_messages(
                 pending_tool_calls = []
 
             messages.append(msg)
+
+        elif item_type == "reasoning":
+            # Reasoning/thinking content - MUST be preserved in conversation
+            # history per Harmony protocol for tool calling (cookbook: 238-256)
+            # Extract text from summary and add as assistant message with
+            # analysis channel
+            summary = item.get("summary", [])
+            thinking_parts = []
+            for summary_item in summary:
+                if (
+                    isinstance(summary_item, dict)
+                    and summary_item.get("type") == "summary_text"
+                ):
+                    thinking_parts.append(summary_item.get("text", ""))
+
+            thinking_content = "\n".join(thinking_parts)
+            if thinking_content:
+                # Add as assistant message with analysis channel for Harmony format
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": thinking_content,
+                        "channel": "analysis",  # Mark as analysis channel for Harmony
+                    }
+                )
 
         elif item_type == "function_call":
             # Tool call from assistant - use Harmony format (flat, not nested)

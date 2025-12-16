@@ -19,8 +19,22 @@ from .models.summarization import SummarizationModelWrapper
 # Import routers
 from .routers import ast_parser, conversations, embed, responses, summarize
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging with explicit format to ensure visibility
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True,  # Override any existing configuration
+)
 logger = logging.getLogger(__name__)
+
+# Ensure our module loggers are set to INFO
+logging.getLogger("src.models.llm").setLevel(logging.INFO)
+logging.getLogger("src.streaming.handler").setLevel(logging.INFO)
+
+# Log startup message to confirm logging is working
+logger.info("=" * 80)
+logger.info("ℹ️  INFO LOGGING ENABLED - Reduced verbosity")
+logger.info("=" * 80)
 
 
 # Define security scheme

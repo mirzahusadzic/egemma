@@ -61,8 +61,8 @@ def test_batch_completion():
     """Test non-streaming completion."""
     wrapper = ChatModelWrapper()
     wrapper.model = MagicMock()
-    wrapper.model.create_chat_completion.return_value = {
-        "choices": [{"message": {"content": "Hello!"}}],
+    wrapper.model.create_completion.return_value = {
+        "choices": [{"text": "Hello!"}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
 
@@ -89,8 +89,8 @@ def test_batch_completion_with_tool_calls():
         '{"tool_calls": [{"id": "call_1", "type": "function", '
         '"function": {"name": "get_weather", "arguments": "{}"}}]}'
     )
-    wrapper.model.create_chat_completion.return_value = {
-        "choices": [{"message": {"content": tool_response}}],
+    wrapper.model.create_completion.return_value = {
+        "choices": [{"text": tool_response}],
         "usage": {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50},
     }
 
@@ -123,11 +123,11 @@ def test_stream_completion():
 
     # Mock streaming response
     mock_chunks = [
-        {"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": " world"}, "finish_reason": None}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"choices": [{"text": "Hello", "finish_reason": None}]},
+        {"choices": [{"text": " world", "finish_reason": None}]},
+        {"choices": [{"text": "", "finish_reason": "stop"}]},
     ]
-    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+    wrapper.model.create_completion.return_value = iter(mock_chunks)
 
     result = wrapper.create_completion(
         messages=[{"role": "user", "content": "Hi"}],
@@ -279,21 +279,24 @@ def test_completion_default_values():
     """Test completion uses default values from settings."""
     wrapper = ChatModelWrapper()
     wrapper.model = MagicMock()
-    wrapper.model.create_chat_completion.return_value = {
-        "choices": [{"message": {"content": "Hi"}}],
+    wrapper.model.create_completion.return_value = {
+        "choices": [{"text": "Hi"}],
         "usage": {},
     }
 
     with patch("src.models.llm.settings") as mock_settings:
         mock_settings.CHAT_MAX_TOKENS = 2048
         mock_settings.CHAT_TEMPERATURE = 0.5
+        mock_settings.CHAT_MIN_P = 0.05
+        mock_settings.CHAT_TOP_P = 0.95
+        mock_settings.CHAT_TOP_K = 40
 
         wrapper.create_completion(
             messages=[{"role": "user", "content": "Test"}],
             stream=False,
         )
 
-        call_args = wrapper.model.create_chat_completion.call_args
+        call_args = wrapper.model.create_completion.call_args
         assert call_args.kwargs["max_tokens"] == 2048
         assert call_args.kwargs["temperature"] == 0.5
 
@@ -305,18 +308,18 @@ def test_stream_completion_with_harmony_format():
 
     # Mock Harmony format streaming response
     mock_chunks = [
-        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "analysis"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "Thinking..."}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|end|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "final"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "Hello!"}, "finish_reason": None}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"choices": [{"text": "<|channel|>", "finish_reason": None}]},
+        {"choices": [{"text": "analysis", "finish_reason": None}]},
+        {"choices": [{"text": "<|message|>", "finish_reason": None}]},
+        {"choices": [{"text": "Thinking...", "finish_reason": None}]},
+        {"choices": [{"text": "<|end|>", "finish_reason": None}]},
+        {"choices": [{"text": "<|channel|>", "finish_reason": None}]},
+        {"choices": [{"text": "final", "finish_reason": None}]},
+        {"choices": [{"text": "<|message|>", "finish_reason": None}]},
+        {"choices": [{"text": "Hello!", "finish_reason": None}]},
+        {"choices": [{"text": "", "finish_reason": "stop"}]},
     ]
-    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+    wrapper.model.create_completion.return_value = iter(mock_chunks)
 
     result = wrapper.create_completion(
         messages=[{"role": "user", "content": "Hi"}],
@@ -342,29 +345,21 @@ def test_stream_completion_with_tool_calls_harmony():
 
     # Mock Harmony format with commentary channel for tool calls
     mock_chunks = [
-        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "analysis"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "Use tool"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|end|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "<|channel|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": "commentary"}, "finish_reason": None}]},
-        {
-            "choices": [
-                {"delta": {"content": " to=functions.bash"}, "finish_reason": None}
-            ]
-        },
-        {
-            "choices": [
-                {"delta": {"content": " <|constrain|>json"}, "finish_reason": None}
-            ]
-        },
-        {"choices": [{"delta": {"content": "<|message|>"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": '{"cmd":'}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": '"ls"}'}, "finish_reason": None}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"choices": [{"text": "<|channel|>", "finish_reason": None}]},
+        {"choices": [{"text": "analysis", "finish_reason": None}]},
+        {"choices": [{"text": "<|message|>", "finish_reason": None}]},
+        {"choices": [{"text": "Use tool", "finish_reason": None}]},
+        {"choices": [{"text": "<|end|>", "finish_reason": None}]},
+        {"choices": [{"text": "<|channel|>", "finish_reason": None}]},
+        {"choices": [{"text": "commentary", "finish_reason": None}]},
+        {"choices": [{"text": " to=functions.bash", "finish_reason": None}]},
+        {"choices": [{"text": " <|constrain|>json", "finish_reason": None}]},
+        {"choices": [{"text": "<|message|>", "finish_reason": None}]},
+        {"choices": [{"text": '{"cmd":', "finish_reason": None}]},
+        {"choices": [{"text": '"ls"}', "finish_reason": None}]},
+        {"choices": [{"text": "", "finish_reason": "stop"}]},
     ]
-    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+    wrapper.model.create_completion.return_value = iter(mock_chunks)
 
     result = wrapper.create_completion(
         messages=[{"role": "user", "content": "List files"}],
@@ -458,11 +453,11 @@ def test_stream_no_duplicate_content():
 
     # Simple non-Harmony streaming
     mock_chunks = [
-        {"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]},
-        {"choices": [{"delta": {"content": " world"}, "finish_reason": None}]},
-        {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        {"choices": [{"text": "Hello", "finish_reason": None}]},
+        {"choices": [{"text": " world", "finish_reason": None}]},
+        {"choices": [{"text": "", "finish_reason": "stop"}]},
     ]
-    wrapper.model.create_chat_completion.return_value = iter(mock_chunks)
+    wrapper.model.create_completion.return_value = iter(mock_chunks)
 
     result = wrapper.create_completion(
         messages=[{"role": "user", "content": "Hi"}],

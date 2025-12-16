@@ -113,18 +113,23 @@ async def generate_streaming_response(
         include_thinking=True,  # o-series reasoning
     )
 
+    logger.debug("[HANDLER] Starting to process stream chunks")
+
     for chunk in stream_response:
         # Check for client disconnect
         if await request.is_disconnected():
+            logger.debug("[HANDLER] Client disconnected, stopping stream")
             break
 
         choices = chunk.get("choices", [])
         if choices:
             delta = choices[0].get("delta", {})
+            logger.debug(f"[HANDLER] Delta received: {delta}")
 
             # Handle reasoning/thinking (GPT-OSS Harmony -> OpenAI o-series)
             thinking = delta.get("thinking", "")
             if thinking:
+                logger.debug(f"[HANDLER] Thinking chunk: {repr(thinking[:100])}")
                 # Strip Harmony format directives from thinking text
                 cleaned_thinking = sanitize_thinking(thinking)
                 # Only emit non-empty thinking after sanitization
@@ -137,6 +142,7 @@ async def generate_streaming_response(
             # Handle text content
             content = delta.get("content", "")
             if content:
+                logger.debug(f"[HANDLER] Content chunk: {repr(content[:100])}")
                 # Always collect content for tool call parsing
                 collected_content.append(content)
 
@@ -149,10 +155,15 @@ async def generate_streaming_response(
                 # Detect start of Harmony format tool call
                 if "<|channel|>commentary" in content:
                     in_tool_call = True
+                    logger.debug(
+                        "[HANDLER] Detected Harmony tool call start "
+                        "(commentary channel)"
+                    )
 
                 # Detect end of Harmony format tool call
                 if "<|end|>" in content or "<|call|>" in content:
                     in_tool_call = False
+                    logger.debug("[HANDLER] Detected Harmony tool call end")
 
                 # Detect standalone JSON tool calls
                 # Check for tool call patterns and track JSON depth
@@ -161,7 +172,12 @@ async def generate_streaming_response(
                     or '{"file_path"' in content
                     or '{"path"' in content
                     or '{"pattern"' in content
+                    or '{"search_path"' in content
+                    or '{"glob"' in content
+                    or '{"old_string"' in content
+                    or '{"notebook_path"' in content
                     or '{"url"' in content
+                    or '{"query"' in content
                     or '{"function"' in content
                     or '{"tool"' in content
                 ):
@@ -183,7 +199,14 @@ async def generate_streaming_response(
 
                 # Only stream if we were NOT in a tool call at the start
                 if not was_in_tool_call and not in_tool_call:
+                    logger.debug(
+                        f"[HANDLER] Streaming content to user: {repr(content[:100])}"
+                    )
                     yield create_text_delta_event(response_id, content, message_item_id)
+                else:
+                    logger.debug(
+                        f"[HANDLER] Suppressing tool call content: {repr(content[:50])}"
+                    )
 
             # Note: Tool calls are NOT streamed by llama-cpp.
             # We parse them from collected_content after streaming.
