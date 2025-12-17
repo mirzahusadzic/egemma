@@ -53,6 +53,8 @@ def format_system_message(
     content_parts.append(
         "# Note: Built-in tools (browser.search, browser.open, "
         "browser.find, python, git) are not available in this environment."
+        "When extracting content, do not include leading or trailing "
+        "whitespace/newlines."
     )
 
     # Clarify that bash should be used for git commands

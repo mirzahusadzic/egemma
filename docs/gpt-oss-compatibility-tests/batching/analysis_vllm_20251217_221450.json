@@ -1,0 +1,24 @@
+{
+  "totalTasks": 10,
+  "passAtKByK": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "passHatKByK": [
+    1,
+    1,
+    0.9,
+    0.8,
+    0.8
+  ],
+  "passAtK": 1,
+  "passHatK": 0.8,
+  "wrongInputToolCalls": 2,
+  "invalidByApiType": {},
+  "totalByApiType": {
+    "responses": 50
+  }
+}

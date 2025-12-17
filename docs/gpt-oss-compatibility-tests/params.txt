@@ -1,0 +1,13 @@
+CHAT_MODEL_PATH: str = "models/gpt-oss-20b-F16.gguf"
+CHAT_MODEL_NAME: str = "gpt-oss-20b"
+CHAT_REASONING_EFFORT = "high" 
+CHAT_N_CTX: int = 65536
+CHAT_N_GPU_LAYERS: int = -1
+CHAT_N_BATCH: int = 2048
+CHAT_USE_MMAP: bool = False
+CHAT_FLASH_ATTN: bool = True
+CHAT_MAX_TOKENS: int = 4096
+CHAT_TEMPERATURE: float = 0.3
+CHAT_MIN_P: float = 0.05
+CHAT_TOP_P: float = 0.95
+CHAT_TOP_K: int = 0

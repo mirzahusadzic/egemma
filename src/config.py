@@ -19,14 +19,14 @@ class Settings(BaseSettings):
     CHAT_MODEL_ENABLED: bool = True
     CHAT_MODEL_PATH: str = "models/gpt-oss-20b-F16.gguf"
     CHAT_MODEL_NAME: str = "gpt-oss-20b"
-    CHAT_N_CTX: int = 65536  # Context window (64K - stable on 32GB)
+    CHAT_N_CTX: int = 65536  # Context window (64K - stable on 36GB)
     CHAT_N_GPU_LAYERS: int = -1  # -1 = all layers on GPU (Metal)
     CHAT_N_BATCH: int = 2048  # Batch size for prompt processing
     CHAT_USE_MMAP: bool = False  # Disable mmap to prevent M3 freeze during load
     CHAT_FLASH_ATTN: bool = True  # Enable Flash Attention for Metal
     CHAT_MAX_TOKENS: int = 4096
-    CHAT_TEMPERATURE: float = 0.8
-    CHAT_MIN_P: float = 0.01  # Prevents degenerate sampling
+    CHAT_TEMPERATURE: float = 0.3
+    CHAT_MIN_P: float = 0.05  # Prevents degenerate sampling
     CHAT_TOP_P: float = 0.95  # Nucleus sampling
     CHAT_TOP_K: int = 0  # Top-K sampling for diversity
     CHAT_REASONING_EFFORT: str = "high"  # low, medium, high - controls thinking depth
