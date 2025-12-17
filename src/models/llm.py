@@ -7,6 +7,7 @@ Supports streaming and tool calling for agentic workflows.
 
 import json
 import logging
+import threading
 import time
 import uuid
 from typing import Iterator
@@ -25,6 +26,7 @@ class ChatModelWrapper:
     def __init__(self):
         self.model: Llama | None = None
         self.model_name = settings.CHAT_MODEL_NAME
+        self._inference_lock = threading.Lock()  # Serialize concurrent requests
 
     def load_model(self) -> None:
         """Load the GGUF model with Metal acceleration."""
@@ -184,16 +186,18 @@ class ChatModelWrapper:
         # Only <|return|> (done) and <|call|> (tool call) should stop inference
         stop_tokens = ["<|return|>", "<|call|>"]
 
-        response = self.model.create_completion(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=stop_tokens,
-            stream=False,
-            min_p=settings.CHAT_MIN_P,
-            top_p=settings.CHAT_TOP_P,
-            top_k=settings.CHAT_TOP_K,
-        )
+        # Acquire lock to prevent concurrent inference (llama-cpp-python isn't thread-safe)
+        with self._inference_lock:
+            response = self.model.create_completion(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop=stop_tokens,
+                stream=False,
+                min_p=settings.CHAT_MIN_P,
+                top_p=settings.CHAT_TOP_P,
+                top_k=settings.CHAT_TOP_K,
+            )
 
         # Parse Harmony format response
         # create_completion returns "text" not "message"
@@ -297,129 +301,160 @@ class ChatModelWrapper:
         logger.debug(f"[STREAM] Stop tokens: {stop_tokens}")
         logger.debug(f"[STREAM] Include thinking: {include_thinking}")
 
-        # Use create_completion with raw Harmony-formatted prompt
-        stream = self.model.create_completion(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stop=stop_tokens,
-            stream=True,
-            min_p=settings.CHAT_MIN_P,
-            top_p=settings.CHAT_TOP_P,
-            top_k=settings.CHAT_TOP_K,
-        )
+        # Acquire lock to prevent concurrent inference (llama-cpp-python isn't thread-safe)
+        # Lock is held for entire streaming duration via try/finally
+        self._inference_lock.acquire()
+        try:
+            # Use create_completion with raw Harmony-formatted prompt
+            stream = self.model.create_completion(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stop=stop_tokens,
+                stream=True,
+                min_p=settings.CHAT_MIN_P,
+                top_p=settings.CHAT_TOP_P,
+                top_k=settings.CHAT_TOP_K,
+            )
 
-        # Track Harmony format state
-        harmony_detected = False
-        in_thinking = False
-        in_final = False
-        thinking_emitted = False
-        final_content_streamed = False
-        tool_prefix_emitted = False  # Track if we've emitted tool prefix
-        buffer = ""
-
-        # Track completion tokens for final usage report
-        completion_tokens = 0
-        total_content_chars = 0
-
-        chunk_count = 0
-        for chunk in stream:
-            chunk_count += 1
-            # create_completion returns "text" directly in streaming mode
-            finish_reason = chunk["choices"][0].get("finish_reason")
-            content = chunk["choices"][0].get("text", "")
-
-            if content:
-                logger.debug(f"[STREAM CHUNK {chunk_count}] Content: {repr(content)}")
-                buffer += content
-
-                # Check for Harmony format markers
-                if "<|channel|>" in buffer and not harmony_detected:
-                    harmony_detected = True
-                    logger.debug("[STREAM] Harmony format detected in buffer")
-
-                if harmony_detected:
-                    # Harmony format parsing
-                    # Check for full analysis marker including <|start|>assistant
-                    # prefix (per template line 292)
-                    if (
-                        "<|start|>assistant<|channel|>analysis<|message|>" in buffer
-                        or "<|channel|>analysis<|message|>" in buffer
-                    ) and not in_thinking:
-                        in_thinking = True
-                        logger.debug("[STREAM] Entering ANALYSIS channel (thinking)")
-                        # Handle both full and partial markers for robustness
-                        if "<|start|>assistant<|channel|>analysis<|message|>" in buffer:
-                            buffer = buffer.split(
-                                "<|start|>assistant<|channel|>analysis<|message|>"
-                            )[-1]
-                            logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
-                        else:
-                            buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
-                            logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
-
-                    # Check for final channel OR commentary channel (tool calls)
-                    # Tool calls: <|channel|>commentary to=functions.X ...
-                    # Only detect commentary transition if we're not already
-                    # in final state
-                    elif not in_final and (
-                        "<|channel|>final<|message|>" in buffer
-                        or (
-                            "<|channel|>commentary" in buffer
-                            and "<|message|>" in buffer
-                        )
-                    ):
-                        if "<|channel|>final<|message|>" in buffer:
-                            logger.debug("[STREAM] Entering FINAL channel")
-                        else:
-                            logger.debug("[STREAM] Entering COMMENTARY channel (tool call)")
-                        # Extract tool call prefix for commentary channel
-                        # IMPORTANT: Preserve full Harmony format for parser
-                        # Template line 297:
-                        # to=functions.{name}<|channel|>commentary json<|message|>{...}
-                        tool_prefix = ""
-                        if "<|channel|>commentary" in buffer:
-                            import re
-
-                            # Extract the FULL tool call prefix
-                            # (preserve all markers!)
-                            # NOTE: Model outputs REVERSED order from template!
-                            # Model: <|channel|>commentary to={name}
-                            #        <|constrain|>json<|message|>
-                            # Template: to=functions.{name}<|channel|>commentary
-                            #           json<|message|>
-                            match = re.search(
-                                r"(<\|channel\|>commentary\s+to=\s*[\w._]+\s*(?:<\|constrain\|>)?(?:json|code)?\s*<\|message\|>)",
-                                buffer,
+            # Track Harmony format state
+            harmony_detected = False
+            in_thinking = False
+            in_final = False
+            thinking_emitted = False
+            final_content_streamed = False
+            tool_prefix_emitted = False  # Track if we've emitted tool prefix
+            buffer = ""
+    
+            # Track completion tokens for final usage report
+            completion_tokens = 0
+            total_content_chars = 0
+    
+            chunk_count = 0
+            for chunk in stream:
+                chunk_count += 1
+                # create_completion returns "text" directly in streaming mode
+                finish_reason = chunk["choices"][0].get("finish_reason")
+                content = chunk["choices"][0].get("text", "")
+    
+                if content:
+                    logger.debug(f"[STREAM CHUNK {chunk_count}] Content: {repr(content)}")
+                    buffer += content
+    
+                    # Check for Harmony format markers
+                    if "<|channel|>" in buffer and not harmony_detected:
+                        harmony_detected = True
+                        logger.debug("[STREAM] Harmony format detected in buffer")
+    
+                    if harmony_detected:
+                        # Harmony format parsing
+                        # Check for full analysis marker including <|start|>assistant
+                        # prefix (per template line 292)
+                        if (
+                            "<|start|>assistant<|channel|>analysis<|message|>" in buffer
+                            or "<|channel|>analysis<|message|>" in buffer
+                        ) and not in_thinking:
+                            in_thinking = True
+                            logger.debug("[STREAM] Entering ANALYSIS channel (thinking)")
+                            # Handle both full and partial markers for robustness
+                            if "<|start|>assistant<|channel|>analysis<|message|>" in buffer:
+                                buffer = buffer.split(
+                                    "<|start|>assistant<|channel|>analysis<|message|>"
+                                )[-1]
+                                logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
+                            else:
+                                buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
+                                logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
+    
+                        # Check for final channel OR commentary channel (tool calls)
+                        # Tool calls: <|channel|>commentary to=functions.X ...
+                        # Only detect commentary transition if we're not already
+                        # in final state
+                        elif not in_final and (
+                            "<|channel|>final<|message|>" in buffer
+                            or (
+                                "<|channel|>commentary" in buffer
+                                and "<|message|>" in buffer
                             )
-                            if match:
-                                tool_prefix = match.group(1)
-
-                        # Determine which channel marker to split on
-                        if "<|channel|>final<|message|>" in buffer:
-                            split_marker = "<|channel|>final<|message|>"
-                        else:
-                            # For commentary, split on <|message|> after it
-                            split_marker = "<|message|>"
-
-                        # Emit thinking before transitioning to final
-                        if in_thinking and include_thinking and not thinking_emitted:
-                            thinking_content = buffer.split(split_marker)[0]
-                            # Clean up to just get the thinking part
-                            if "<|channel|>commentary" in thinking_content:
-                                thinking_content = thinking_content.split(
-                                    "<|channel|>commentary"
-                                )[0]
-                            thinking_content = (
-                                thinking_content.replace("<|end|>", "")
-                                .replace("<|start|>", "")
-                                .replace("<|channel|>", "")
-                                .replace("<|call|>", "")
-                                .replace("<|message|>", "")
-                                .replace("assistant", "")
-                                .strip()
-                            )
-                            if thinking_content:
+                        ):
+                            if "<|channel|>final<|message|>" in buffer:
+                                logger.debug("[STREAM] Entering FINAL channel")
+                            else:
+                                logger.debug("[STREAM] Entering COMMENTARY channel (tool call)")
+                            # Extract tool call prefix for commentary channel
+                            # IMPORTANT: Preserve full Harmony format for parser
+                            # Template line 297:
+                            # to=functions.{name}<|channel|>commentary json<|message|>{...}
+                            tool_prefix = ""
+                            if "<|channel|>commentary" in buffer:
+                                import re
+    
+                                # Extract the FULL tool call prefix
+                                # (preserve all markers!)
+                                # NOTE: Model outputs REVERSED order from template!
+                                # Model: <|channel|>commentary to={name}
+                                #        <|constrain|>json<|message|>
+                                # Template: to=functions.{name}<|channel|>commentary
+                                #           json<|message|>
+                                match = re.search(
+                                    r"(<\|channel\|>commentary\s+to=\s*[\w._]+\s*(?:<\|constrain\|>)?(?:json|code)?\s*<\|message\|>)",
+                                    buffer,
+                                )
+                                if match:
+                                    tool_prefix = match.group(1)
+    
+                            # Determine which channel marker to split on
+                            if "<|channel|>final<|message|>" in buffer:
+                                split_marker = "<|channel|>final<|message|>"
+                            else:
+                                # For commentary, split on <|message|> after it
+                                split_marker = "<|message|>"
+    
+                            # Emit thinking before transitioning to final
+                            if in_thinking and include_thinking and not thinking_emitted:
+                                thinking_content = buffer.split(split_marker)[0]
+                                # Clean up to just get the thinking part
+                                if "<|channel|>commentary" in thinking_content:
+                                    thinking_content = thinking_content.split(
+                                        "<|channel|>commentary"
+                                    )[0]
+                                thinking_content = (
+                                    thinking_content.replace("<|end|>", "")
+                                    .replace("<|start|>", "")
+                                    .replace("<|channel|>", "")
+                                    .replace("<|call|>", "")
+                                    .replace("<|message|>", "")
+                                    .replace("assistant", "")
+                                    .strip()
+                                )
+                                if thinking_content:
+                                    yield {
+                                        "id": completion_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created,
+                                        "model": self.model_name,
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": {"thinking": thinking_content},
+                                                "finish_reason": None,
+                                            }
+                                        ],
+                                    }
+                                thinking_emitted = True
+    
+                            in_thinking = False
+                            in_final = True
+                            # Extract JSON part that comes after the tool prefix
+                            json_part = buffer.split(split_marker)[-1]
+                            # Prepend tool prefix for proper parsing later
+                            buffer = tool_prefix + json_part
+    
+                            # Emit tool prefix immediately so it's included in output (ONCE)
+                            if tool_prefix and not tool_prefix_emitted:
+                                final_content_streamed = True
+                                tool_prefix_emitted = True  # Mark as emitted
+                                total_content_chars += len(tool_prefix)
                                 yield {
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
@@ -428,25 +463,83 @@ class ChatModelWrapper:
                                     "choices": [
                                         {
                                             "index": 0,
-                                            "delta": {"thinking": thinking_content},
+                                            "delta": {"content": tool_prefix},
                                             "finish_reason": None,
                                         }
                                     ],
                                 }
-                            thinking_emitted = True
-
-                        in_thinking = False
-                        in_final = True
-                        # Extract JSON part that comes after the tool prefix
-                        json_part = buffer.split(split_marker)[-1]
-                        # Prepend tool prefix for proper parsing later
-                        buffer = tool_prefix + json_part
-
-                        # Emit tool prefix immediately so it's included in output (ONCE)
-                        if tool_prefix and not tool_prefix_emitted:
-                            final_content_streamed = True
-                            tool_prefix_emitted = True  # Mark as emitted
-                            total_content_chars += len(tool_prefix)
+    
+                                # Also emit the JSON part that's already in the buffer
+                                if json_part:
+                                    total_content_chars += len(json_part)
+                                    yield {
+                                        "id": completion_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created,
+                                        "model": self.model_name,
+                                        "choices": [
+                                            {
+                                                "index": 0,
+                                                "delta": {"content": json_part},
+                                                "finish_reason": None,
+                                            }
+                                        ],
+                                    }
+                                    # Clear the buffer since we've emitted everything
+                                    buffer = ""
+    
+                        elif in_final:
+                            # Stream final content, cleaning Harmony tokens
+                            clean = content
+                            harmony_tokens = [
+                                "<|end|>",
+                                "<|start|>",
+                                "<|channel|>",
+                                "<|call|>",
+                                "<|message|>",
+                            ]
+                            for tok in harmony_tokens:
+                                clean = clean.replace(tok, "")
+                            if clean:
+                                final_content_streamed = True
+                                total_content_chars += len(clean)
+                                yield {
+                                    "id": completion_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": self.model_name,
+                                    "choices": [
+                                        {
+                                            "index": 0,
+                                            "delta": {"content": clean},
+                                            "finish_reason": None,
+                                        }
+                                    ],
+                                }
+                    else:
+                        # Non-Harmony: pass through as-is (OpenAI compatible)
+                        total_content_chars += len(content)
+                        yield {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": self.model_name,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": content},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+    
+                if finish_reason:
+                    # For Harmony format that didn't complete cleanly, emit buffered
+                    if harmony_detected and in_thinking and not thinking_emitted:
+                        # Buffer contains raw thinking content (markers already stripped)
+                        # Emit it directly as thinking without parsing
+                        logger.debug(f"[STREAM] Stream ended in thinking mode, emitting buffer as thinking: {repr(buffer[:100])}")
+                        if include_thinking and buffer:
                             yield {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -455,46 +548,39 @@ class ChatModelWrapper:
                                 "choices": [
                                     {
                                         "index": 0,
-                                        "delta": {"content": tool_prefix},
+                                        "delta": {"thinking": buffer},
                                         "finish_reason": None,
                                     }
                                 ],
                             }
-
-                            # Also emit the JSON part that's already in the buffer
-                            if json_part:
-                                total_content_chars += len(json_part)
-                                yield {
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": self.model_name,
-                                    "choices": [
-                                        {
-                                            "index": 0,
-                                            "delta": {"content": json_part},
-                                            "finish_reason": None,
-                                        }
-                                    ],
-                                }
-                                # Clear the buffer since we've emitted everything
-                                buffer = ""
-
-                    elif in_final:
-                        # Stream final content, cleaning Harmony tokens
-                        clean = content
-                        harmony_tokens = [
+                            thinking_emitted = True
+                            # Clear buffer after emitting thinking
+                            buffer = ""
+    
+                    # Emit any remaining buffer content when in_final mode
+                    # This handles tool calls that arrived in the same chunk as
+                    # <|channel|>final<|message|> and weren't streamed yet
+                    # Skip if we already streamed final content incrementally
+                    if (
+                        harmony_detected
+                        and in_final
+                        and buffer
+                        and not final_content_streamed
+                    ):
+                        # Clean Harmony tokens from buffer
+                        clean_buffer = buffer
+                        harmony_toks = [
                             "<|end|>",
                             "<|start|>",
                             "<|channel|>",
                             "<|call|>",
                             "<|message|>",
                         ]
-                        for tok in harmony_tokens:
-                            clean = clean.replace(tok, "")
-                        if clean:
-                            final_content_streamed = True
-                            total_content_chars += len(clean)
+                        for tok in harmony_toks:
+                            clean_buffer = clean_buffer.replace(tok, "")
+                        clean_buffer = clean_buffer.strip()
+                        if clean_buffer:
+                            total_content_chars += len(clean_buffer)
                             yield {
                                 "id": completion_id,
                                 "object": "chat.completion.chunk",
@@ -503,114 +589,38 @@ class ChatModelWrapper:
                                 "choices": [
                                     {
                                         "index": 0,
-                                        "delta": {"content": clean},
+                                        "delta": {"content": clean_buffer},
                                         "finish_reason": None,
                                     }
                                 ],
                             }
-                else:
-                    # Non-Harmony: pass through as-is (OpenAI compatible)
-                    total_content_chars += len(content)
+    
+                    # Calculate completion tokens from content
+                    completion_tokens = self._count_tokens_from_chars(total_content_chars)
+    
+                    # Detect finish_reason="length" when max_tokens is reached
+                    # llama-cpp often returns "stop" even when hitting max_tokens
+                    final_finish_reason = finish_reason
+                    if completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
+                        final_finish_reason = "length"
+    
+                    # Yield final chunk with usage (OpenAI SDK requirement)
                     yield {
                         "id": completion_id,
                         "object": "chat.completion.chunk",
                         "created": created,
                         "model": self.model_name,
                         "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": content},
-                                "finish_reason": None,
-                            }
+                            {"index": 0, "delta": {}, "finish_reason": final_finish_reason}
                         ],
+                        "usage": {
+                            "prompt_tokens": prompt_tokens,
+                            "completion_tokens": completion_tokens,
+                            "total_tokens": prompt_tokens + completion_tokens,
+                        },
                     }
-
-            if finish_reason:
-                # For Harmony format that didn't complete cleanly, emit buffered
-                if harmony_detected and in_thinking and not thinking_emitted:
-                    # Buffer contains raw thinking content (markers already stripped)
-                    # Emit it directly as thinking without parsing
-                    logger.debug(f"[STREAM] Stream ended in thinking mode, emitting buffer as thinking: {repr(buffer[:100])}")
-                    if include_thinking and buffer:
-                        yield {
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": self.model_name,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"thinking": buffer},
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
-                        thinking_emitted = True
-                        # Clear buffer after emitting thinking
-                        buffer = ""
-
-                # Emit any remaining buffer content when in_final mode
-                # This handles tool calls that arrived in the same chunk as
-                # <|channel|>final<|message|> and weren't streamed yet
-                # Skip if we already streamed final content incrementally
-                if (
-                    harmony_detected
-                    and in_final
-                    and buffer
-                    and not final_content_streamed
-                ):
-                    # Clean Harmony tokens from buffer
-                    clean_buffer = buffer
-                    harmony_toks = [
-                        "<|end|>",
-                        "<|start|>",
-                        "<|channel|>",
-                        "<|call|>",
-                        "<|message|>",
-                    ]
-                    for tok in harmony_toks:
-                        clean_buffer = clean_buffer.replace(tok, "")
-                    clean_buffer = clean_buffer.strip()
-                    if clean_buffer:
-                        total_content_chars += len(clean_buffer)
-                        yield {
-                            "id": completion_id,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": self.model_name,
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "delta": {"content": clean_buffer},
-                                    "finish_reason": None,
-                                }
-                            ],
-                        }
-
-                # Calculate completion tokens from content
-                completion_tokens = self._count_tokens_from_chars(total_content_chars)
-
-                # Detect finish_reason="length" when max_tokens is reached
-                # llama-cpp often returns "stop" even when hitting max_tokens
-                final_finish_reason = finish_reason
-                if completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
-                    final_finish_reason = "length"
-
-                # Yield final chunk with usage (OpenAI SDK requirement)
-                yield {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "created": created,
-                    "model": self.model_name,
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": final_finish_reason}
-                    ],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": prompt_tokens + completion_tokens,
-                    },
-                }
+        finally:
+            self._inference_lock.release()
 
     def _parse_tool_calls(self, content: str) -> list[dict] | None:
         """

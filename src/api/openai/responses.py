@@ -42,6 +42,7 @@ class ResponseOutputMessage:
     role: Literal["assistant"] = "assistant"
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
     content: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class ResponseOutputMessage:
             "role": self.role,
             "status": self.status,
             "content": self.content,
+            "tool_calls": self.tool_calls,
         }
 
 
@@ -77,20 +79,24 @@ class ResponseOutputFunctionCall:
 
 @dataclass
 class ResponseOutputReasoning:
-    """Reasoning/thinking output item (OpenAI o-series compatible).
+    """Reasoning/thinking output item (OpenAI Agent SDK compatible).
 
-    SDK reads "summary" field, converts to "content" internally.
+    Uses "summary" field with "summary_text" items (Agent SDK expects this structure).
     """
 
     id: str
     summary: list[dict[str, Any]] = field(default_factory=list)
     type: Literal["reasoning"] = "reasoning"
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type,
-            "summary": self.summary,
+            "status": self.status,
+            "summary": self.summary,  # Agent SDK expects "summary" not "content"
+            "tool_calls": self.tool_calls,
         }
 
 
@@ -101,12 +107,20 @@ class ResponseUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    input_tokens_details: dict[str, int] = field(
+        default_factory=lambda: {"cached_tokens": 0}
+    )
+    output_tokens_details: dict[str, int] = field(
+        default_factory=lambda: {"reasoning_tokens": 0}
+    )
 
     def to_dict(self) -> dict[str, Any]:
         # OpenAI API uses snake_case for usage fields
         return {
             "input_tokens": self.input_tokens,
+            "input_tokens_details": self.input_tokens_details,
             "output_tokens": self.output_tokens,
+            "output_tokens_details": self.output_tokens_details,
             "total_tokens": self.total_tokens,
         }
 
@@ -127,7 +141,22 @@ class Response:
     max_output_tokens: int | None = None
     previous_response_id: str | None = None
     usage: ResponseUsage = field(default_factory=ResponseUsage)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    modalities: list[str] = field(default_factory=lambda: ["text"])
+    tools: list[dict[str, Any]] = field(default_factory=list)
     error: dict[str, Any] | None = None
+    # Additional fields required by OpenAI Responses API
+    incomplete_details: dict[str, Any] | None = None
+    parallel_tool_calls: bool = True
+    reasoning: dict[str, Any] = field(
+        default_factory=lambda: {"effort": None, "summary": None}
+    )
+    store: bool = True
+    text: dict[str, Any] = field(default_factory=lambda: {"format": {"type": "text"}})
+    tool_choice: str = "auto"
+    top_p: float | None = None
+    truncation: str = "disabled"
+    user: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = {
@@ -138,19 +167,25 @@ class Response:
             "output": self.output,
             "output_text": self.output_text,
             "status": self.status,
+            "error": self.error,
+            "incomplete_details": self.incomplete_details,
+            "instructions": self.instructions,
+            "max_output_tokens": self.max_output_tokens,
+            "parallel_tool_calls": self.parallel_tool_calls,
+            "previous_response_id": self.previous_response_id,
+            "reasoning": self.reasoning,
+            "store": self.store,
+            "temperature": self.temperature,
+            "text": self.text,
+            "tool_choice": self.tool_choice,
+            "tools": self.tools,
+            "top_p": self.top_p,
+            "truncation": self.truncation,
             "usage": self.usage.to_dict(),
+            "user": self.user,
+            "metadata": self.metadata,
+            "modalities": self.modalities,
         }
-
-        if self.instructions is not None:
-            result["instructions"] = self.instructions
-        if self.temperature is not None:
-            result["temperature"] = self.temperature
-        if self.max_output_tokens is not None:
-            result["max_output_tokens"] = self.max_output_tokens
-        if self.previous_response_id is not None:
-            result["previous_response_id"] = self.previous_response_id
-        if self.error is not None:
-            result["error"] = self.error
 
         return result
 
@@ -242,8 +277,8 @@ def parse_input_to_messages(
         elif item_type == "reasoning":
             # Reasoning/thinking content - MUST be preserved in conversation
             # history per Harmony protocol for tool calling (cookbook: 238-256)
-            # Extract text from summary and add as assistant message with
-            # analysis channel
+            # Extract text from summary (Agent SDK structure) and add as assistant
+            # message with analysis channel
             summary = item.get("summary", [])
             thinking_parts = []
             for summary_item in summary:
@@ -395,16 +430,6 @@ def convert_chat_response_to_response(
             )
             output.append(reasoning_output.to_dict())
 
-        # Handle text content
-        content = message.get("content", "")
-        if content:
-            output_text = content
-            msg_output = ResponseOutputMessage(
-                id=generate_message_id(),
-                content=[{"type": "output_text", "text": content}],
-            )
-            output.append(msg_output.to_dict())
-
         # Handle tool calls
         tool_calls = message.get("tool_calls") or []
         for tc in tool_calls:
@@ -416,6 +441,18 @@ def convert_chat_response_to_response(
                 arguments=func.get("arguments", "{}"),
             )
             output.append(fc_output.to_dict())
+
+        # Handle text content (always add message item for SDK compatibility)
+        content = message.get("content", "")
+        if content or not tool_calls:
+            output_text = content
+            msg_output = ResponseOutputMessage(
+                id=generate_message_id(),
+                content=[{"type": "output_text", "text": content, "annotations": []}]
+                if content
+                else [],
+            )
+            output.append(msg_output.to_dict())
 
     # Extract usage
     usage_data = chat_response.get("usage", {})
@@ -473,11 +510,33 @@ def create_text_delta_event(response_id: str, delta: str, item_id: str) -> str:
     )
 
 
-def create_reasoning_delta_event(response_id: str, delta: str, item_id: str) -> str:
-    """Create reasoning_summary.delta streaming event for thinking."""
+def create_reasoning_delta_event(
+    response_id: str,
+    delta: str,
+    item_id: str,
+    output_index: int = 0,
+    content_index: int = 0,
+    sequence_number: int = 1,
+) -> str:
+    """Create reasoning_text.delta streaming event for thinking."""
     return create_stream_event(
-        "response.reasoning_summary.delta",
-        {"delta": delta, "item_id": item_id},
+        "response.reasoning_text.delta",
+        {
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "delta": delta,
+            "sequence_number": sequence_number,
+        },
+        response_id,
+    )
+
+
+def create_reasoning_done_event(response_id: str, item_id: str) -> str:
+    """Create reasoning_text.done streaming event for thinking completion."""
+    return create_stream_event(
+        "response.reasoning_text.done",
+        {"item_id": item_id},
         response_id,
     )
 

@@ -25,10 +25,10 @@ class Settings(BaseSettings):
     CHAT_USE_MMAP: bool = False  # Disable mmap to prevent M3 freeze during load
     CHAT_FLASH_ATTN: bool = True  # Enable Flash Attention for Metal
     CHAT_MAX_TOKENS: int = 4096
-    CHAT_TEMPERATURE: float = 1.0
-    CHAT_MIN_P: float = 0.05  # Prevents degenerate sampling
-    CHAT_TOP_P: float = 1.0  # Nucleus sampling (Unsloth recommendation)
-    CHAT_TOP_K: int = 40  # Top-K sampling for diversity
+    CHAT_TEMPERATURE: float = 0.8
+    CHAT_MIN_P: float = 0.01  # Prevents degenerate sampling
+    CHAT_TOP_P: float = 0.95  # Nucleus sampling
+    CHAT_TOP_K: int = 0  # Top-K sampling for diversity
     CHAT_REASONING_EFFORT: str = "high"  # low, medium, high - controls thinking depth
     CHAT_RATE_LIMIT_SECONDS: int = 60
     CHAT_RATE_LIMIT_CALLS: int = 100

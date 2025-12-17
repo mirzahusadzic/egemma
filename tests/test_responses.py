@@ -624,11 +624,11 @@ class TestStreamEventCreation:
         assert data["item_id"] == "item_123"
 
     def test_create_reasoning_delta_event(self):
-        """Test response.reasoning_summary.delta event."""
+        """Test response.reasoning_text.delta event."""
         event = create_reasoning_delta_event(
             "resp_xyz", "Analyzing the problem...", "rs_123"
         )
-        assert "event: response.reasoning_summary.delta" in event
+        assert "event: response.reasoning_text.delta" in event
         data = json.loads(event.split("data: ")[1].strip())
         assert data["delta"] == "Analyzing the problem..."
         assert data["item_id"] == "rs_123"

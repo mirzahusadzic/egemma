@@ -14,6 +14,7 @@ from ..api.openai.responses import (
     ResponseUsage,
     create_output_item_added_event,
     create_reasoning_delta_event,
+    create_reasoning_done_event,
     create_response_created_event,
     create_response_done_event,
     create_text_delta_event,
@@ -22,7 +23,7 @@ from ..api.openai.responses import (
     generate_reasoning_id,
 )
 from ..models.llm import ChatModelWrapper
-from ..util import sanitize_thinking
+from ..util import sanitize_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ async def generate_streaming_response(
     )
 
     # Send response.created event
+    logger.debug(f"[STREAM] Sending response.created: {initial_response.to_dict()}")
     yield create_response_created_event(initial_response)
 
     # Track output for final response
@@ -88,6 +90,7 @@ async def generate_streaming_response(
     usage = ResponseUsage()
     in_tool_call = False  # Track if we're streaming a tool call
     json_brace_depth = 0  # Track JSON object depth for standalone JSON
+    reasoning_sequence = 0  # Track sequence number for reasoning deltas
 
     # Log request for debugging (use DEBUG level to avoid console spam)
     logger.debug(f"[STREAM] Request to model: {len(messages)} messages")
@@ -115,10 +118,30 @@ async def generate_streaming_response(
 
     logger.debug("[HANDLER] Starting to process stream chunks")
 
-    for chunk in stream_response:
-        # Check for client disconnect
+    # Helper to safely get next chunk (StopIteration -> sentinel)
+    _sentinel = object()
+
+    def safe_next(iterator):
+        try:
+            return next(iterator)
+        except StopIteration:
+            return _sentinel
+
+    # Iterate generator in threadpool to avoid blocking event loop
+    stream_iter = iter(stream_response)
+    while True:
+        # Check for client disconnect before fetching next chunk
         if await request.is_disconnected():
             logger.debug("[HANDLER] Client disconnected, stopping stream")
+            # Close the generator to release the inference lock
+            if hasattr(stream_response, "close"):
+                stream_response.close()
+                logger.debug("[HANDLER] Stream generator closed (client disconnect)")
+            break
+
+        # Get next chunk in threadpool (doesn't block event loop)
+        chunk = await run_in_threadpool(safe_next, stream_iter)
+        if chunk is _sentinel:
             break
 
         choices = chunk.get("choices", [])
@@ -131,12 +154,18 @@ async def generate_streaming_response(
             if thinking:
                 logger.debug(f"[HANDLER] Thinking chunk: {repr(thinking[:100])}")
                 # Strip Harmony format directives from thinking text
-                cleaned_thinking = sanitize_thinking(thinking)
+                cleaned_thinking = sanitize_for_display(thinking)
                 # Only emit non-empty thinking after sanitization
                 if cleaned_thinking:
                     collected_thinking.append(cleaned_thinking)
+                    reasoning_sequence += 1
                     yield create_reasoning_delta_event(
-                        response_id, cleaned_thinking, reasoning_item_id
+                        response_id,
+                        cleaned_thinking,
+                        reasoning_item_id,
+                        output_index=0,  # Reasoning is always first output
+                        content_index=0,  # Single content block for reasoning
+                        sequence_number=reasoning_sequence,
                     )
 
             # Handle text content
@@ -199,10 +228,16 @@ async def generate_streaming_response(
 
                 # Only stream if we were NOT in a tool call at the start
                 if not was_in_tool_call and not in_tool_call:
-                    logger.debug(
-                        f"[HANDLER] Streaming content to user: {repr(content[:100])}"
-                    )
-                    yield create_text_delta_event(response_id, content, message_item_id)
+                    # Sanitize content (preserve JSON - may be legitimate output)
+                    clean_content = sanitize_for_display(content, strip_json=False)
+                    if clean_content.strip():
+                        logger.debug(
+                            f"[HANDLER] Streaming content to user: "
+                            f"{repr(clean_content[:100])}"
+                        )
+                        yield create_text_delta_event(
+                            response_id, clean_content, message_item_id
+                        )
                 else:
                     logger.debug(
                         f"[HANDLER] Suppressing tool call content: {repr(content[:50])}"
@@ -211,38 +246,44 @@ async def generate_streaming_response(
             # Note: Tool calls are NOT streamed by llama-cpp.
             # We parse them from collected_content after streaming.
 
-        # Extract usage if present
-        chunk_usage = chunk.get("usage")
-        if chunk_usage:
-            usage.input_tokens = chunk_usage.get("prompt_tokens", 0)
-            usage.output_tokens = chunk_usage.get("completion_tokens", 0)
-            usage.total_tokens = chunk_usage.get("total_tokens", 0)
+            # Extract usage if present
+            chunk_usage = chunk.get("usage")
+            if chunk_usage:
+                usage.input_tokens = chunk_usage.get("prompt_tokens", 0)
+                usage.output_tokens = chunk_usage.get("completion_tokens", 0)
+                usage.total_tokens = chunk_usage.get("total_tokens", 0)
 
     # Build final response
     output = []
-    output_text = "".join(collected_content)
+    # Keep raw content for tool call parsing, sanitize later for display
+    raw_output_text = "".join(collected_content)
     output_index = 0
 
     # Include reasoning first (model thinks, then responds)
-    # SDK reads "summary" field, converts to "content" internally
+    # Use "summary" field (not "content") - Agent SDK expects this structure
     reasoning_text = "".join(collected_thinking)
     if reasoning_text:
         summary_item = {"type": "summary_text", "text": reasoning_text}
         reasoning_item = {
             "id": reasoning_item_id,
             "type": "reasoning",
-            "summary": [summary_item],
+            "status": "completed",
+            "summary": [summary_item],  # Agent SDK expects "summary" not "content"
+            "tool_calls": [],  # Empty for SDK compatibility
         }
         output.append(reasoning_item)
         # Emit output_item.added event for SDK
+        logger.debug(f"[STREAM] Emitting reasoning item: {reasoning_item}")
         yield create_output_item_added_event(response_id, reasoning_item, output_index)
+        # Emit reasoning.done event to signal reasoning completion
+        yield create_reasoning_done_event(response_id, reasoning_item_id)
         output_index += 1
 
-    # Parse tool calls from collected content (streaming doesn't
-    # emit tool_calls, so we parse from text like batch mode)
+    # Parse tool calls from RAW content (before sanitization)
+    # Tool call patterns need to be intact for Format 3 parsing
     parsed_tool_calls = []
-    if chat_tools and output_text:
-        parsed_tool_calls = chat_model_wrapper._parse_tool_calls(output_text) or []
+    if chat_tools and raw_output_text:
+        parsed_tool_calls = chat_model_wrapper._parse_tool_calls(raw_output_text) or []
 
     # If we have tool calls, add them and clear text output
     if parsed_tool_calls:
@@ -255,6 +296,8 @@ async def generate_streaming_response(
                 "name": func.get("name", ""),
                 "arguments": func.get("arguments", "{}"),
                 "status": "completed",
+                # Add empty content array for SDK compatibility
+                "content": [],
             }
             output.append(fc_item)
             # Emit output_item.added event for SDK
@@ -262,17 +305,25 @@ async def generate_streaming_response(
             output_index += 1
         # Clear text output when we have tool calls (like batch mode)
         output_text = ""
-    elif output_text:
-        # Only add message output if no tool calls
+    else:
+        # No tool calls - sanitize for display (preserve JSON in output)
+        output_text = sanitize_for_display(raw_output_text, strip_json=False)
+
+    # Always add message output (even if empty) to ensure SDK has a message item
+    if output_text or not parsed_tool_calls:
         message_item = {
             "id": message_item_id,
             "type": "message",
             "role": "assistant",
             "status": "completed",
-            "content": [{"type": "output_text", "text": output_text}],
+            "content": [{"type": "output_text", "text": output_text, "annotations": []}]
+            if output_text
+            else [],
+            "tool_calls": [],  # Empty for SDK compatibility
         }
         output.append(message_item)
         # Emit output_item.added event for SDK
+        logger.debug(f"[STREAM] Emitting message item: {message_item}")
         yield create_output_item_added_event(response_id, message_item, output_index)
         output_index += 1
 
@@ -291,4 +342,6 @@ async def generate_streaming_response(
     )
 
     # Send response.completed event
+    logger.debug(f"[STREAM] Sending response.completed with {len(output)} items")
+    logger.debug(f"[STREAM] Final response output: {output}")
     yield create_response_done_event(final_response)

@@ -119,7 +119,8 @@ class TestConversationModel:
         assert d["object"] == "conversation.item"
         assert d["conversation_id"] == "conv_xyz789"
         assert d["role"] == "user"
-        assert d["content"] == "Hello, world!"
+        # Content is normalized to SDK array format
+        assert d["content"] == [{"type": "input_text", "text": "Hello, world!"}]
         assert d["created_at"] == 1234567890
 
     def test_conversation_item_with_tool_calls(self):
@@ -177,7 +178,8 @@ class TestConversationModel:
         d = conv.to_list_dict()
         assert d["id"] == "conv_xyz789"
         assert d["item_count"] == 1
-        assert "items" not in d  # List view doesn't include items
+        # List view includes empty items array for SDK compatibility
+        assert d["items"] == []
 
 
 class TestConversationManager:
@@ -294,8 +296,9 @@ class TestConversationManager:
 
         items = manager.get_items(conv.id)
         assert len(items) == 2
-        assert items[0]["content"] == "Hello"
-        assert items[1]["content"] == "Hi!"
+        # Content is normalized to SDK array format
+        assert items[0]["content"] == [{"type": "input_text", "text": "Hello"}]
+        assert items[1]["content"] == [{"type": "input_text", "text": "Hi!"}]
 
     def test_get_items_order_asc(self, tmp_path):
         """Test getting items in ascending order."""
@@ -311,8 +314,9 @@ class TestConversationManager:
         )
 
         items = manager.get_items(conv.id, order="asc")
-        assert items[0]["content"] == "First"
-        assert items[1]["content"] == "Second"
+        # Content is normalized to SDK array format
+        assert items[0]["content"] == [{"type": "input_text", "text": "First"}]
+        assert items[1]["content"] == [{"type": "input_text", "text": "Second"}]
 
     def test_get_items_order_desc(self, tmp_path):
         """Test getting items in descending order."""
@@ -328,8 +332,9 @@ class TestConversationManager:
         )
 
         items = manager.get_items(conv.id, order="desc")
-        assert items[0]["content"] == "Second"
-        assert items[1]["content"] == "First"
+        # Content is normalized to SDK array format
+        assert items[0]["content"] == [{"type": "input_text", "text": "Second"}]
+        assert items[1]["content"] == [{"type": "input_text", "text": "First"}]
 
     def test_get_items_limit(self, tmp_path):
         """Test getting items with limit."""
@@ -571,21 +576,21 @@ class TestConversationsAPI:
             json=items,
         )
 
-        # Get ascending
+        # Get ascending - content is normalized to SDK array format
         asc_resp = client.get(
             f"/v1/conversations/{conv_id}/items?order=asc",
             headers=HEADERS,
         )
         asc_data = asc_resp.json()["data"]
-        assert asc_data[0]["content"] == "Message 0"
+        assert asc_data[0]["content"] == [{"type": "input_text", "text": "Message 0"}]
 
-        # Get descending
+        # Get descending - content is normalized to SDK array format
         desc_resp = client.get(
             f"/v1/conversations/{conv_id}/items?order=desc",
             headers=HEADERS,
         )
         desc_data = desc_resp.json()["data"]
-        assert desc_data[0]["content"] == "Message 4"
+        assert desc_data[0]["content"] == [{"type": "input_text", "text": "Message 4"}]
 
     def test_unauthorized_request(self, client):
         """Test request without authorization."""

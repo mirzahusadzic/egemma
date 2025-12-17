@@ -8,11 +8,12 @@ These utilities help strip Harmony syntax from user-facing text like thinking bl
 import re
 
 
-def sanitize_thinking(thinking: str) -> str:
+def sanitize_for_display(text: str, strip_json: bool = True) -> str:
     """
-    Remove Harmony format directives from thinking/reasoning text.
+    Remove Harmony format directives and malformed tool patterns for display.
 
-    GPT-OSS models sometimes output Harmony protocol syntax in thinking blocks:
+    GPT-OSS models sometimes output Harmony protocol syntax and malformed
+    tool invocations in thinking blocks and content:
     - assistantcommentary to=functions.bash<|constrain|>json{...}
     - assistantcommentary to=functions.read_file json{...}  (no <|constrain|>)
     - assistantcommentary to=functions.bash code{...}  (code instead of json)
@@ -21,30 +22,34 @@ def sanitize_thinking(thinking: str) -> str:
     - to=CHANGELOG.md????
     - <|channel|>commentary
     - <|constrain|>, <|end|>, <|start|>
+    - {"command":"..."}, {"file_path":"..."}, etc. (standalone JSON tool calls)
 
-    This function strips these directives to produce clean thinking text.
+    This function strips these directives to produce clean display text.
 
     Args:
-        thinking: Raw thinking text that may contain Harmony directives
+        text: Raw text that may contain Harmony directives or tool patterns
+        strip_json: If True (default), also strip standalone JSON tool calls.
+                    Set to False for output text that may contain legitimate JSON
+                    (e.g., from tools like `cognition-cli --json`).
 
     Returns:
-        Cleaned thinking text with Harmony syntax removed
+        Cleaned text with Harmony syntax removed
 
     Examples:
         >>> text = "Let's run bash.assistantcommentary to=functions.bash"
         >>> text += "<|constrain|>json{...}"
-        >>> sanitize_thinking(text)
+        >>> sanitize_for_display(text)
         "Let's run bash."
 
-        >>> sanitize_thinking("We need to check<|channel|>commentary the "
-        ...                   "status<|end|>.")
+        >>> sanitize_for_display("We need to check<|channel|>commentary the "
+        ...                      "status<|end|>.")
         "We need to check the status."
     """
-    if not thinking:
-        return thinking
+    if not text:
+        return text
 
     # Start with original text
-    cleaned = thinking
+    cleaned = text
 
     # Pattern 0: Handle malformed concatenation with full directive
     # Matches: [non-whitespace]assistant(commentary|analysis|final)
@@ -156,6 +161,24 @@ def sanitize_thinking(thinking: str) -> str:
         cleaned,
     )
 
+    # Pattern 1h: Remove standalone JSON tool calls that leak into thinking
+    # Matches: {"command":"..."}, {"file_path":"..."}, etc.
+    # Only applied when strip_json=True (default for thinking blocks)
+    if strip_json:
+        json_tool_patterns = [
+            r'\{"command":[^}]*\}',
+            r'\{"file_path":[^}]*\}',
+            r'\{"path":[^}]*\}',
+            r'\{"pattern":[^}]*\}',
+            r'\{"query":[^}]*\}',
+            r'\{"url":[^}]*\}',
+            r'\{"glob":[^}]*\}',
+            r'\{"old_string":[^}]*\}',
+            r'\{"notebook_path":[^}]*\}',
+        ]
+        for pattern in json_tool_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.DOTALL)
+
     # Pattern 2: Remove Harmony channel markers
     # Matches: <|channel|>commentary
     cleaned = re.sub(r"<\|channel\|>\w+", "", cleaned)
@@ -181,11 +204,7 @@ def sanitize_thinking(thinking: str) -> str:
         cleaned,
     )
 
-    # Pattern 5: Clean up whitespace artifacts from removal
-    # Multiple spaces -> single space
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
-
-    # Trailing whitespace
-    cleaned = cleaned.strip()
+    # NOTE: We intentionally do NOT modify whitespace.
+    # Only Harmony artifacts are removed; all formatting preserved.
 
     return cleaned

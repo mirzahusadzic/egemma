@@ -31,23 +31,33 @@ class ConversationItem:
     id: str
     conversation_id: str
     role: Literal["user", "assistant", "system"]
-    content: str
+    content: list[dict] | str  # Support both array (SDK format) and string (legacy)
     created_at: float = field(default_factory=time.time)
     tool_calls: list[dict] | None = None
     tool_call_id: str | None = None
 
     def to_dict(self) -> dict:
         """Convert item to OpenAI-compatible dictionary."""
+        # Normalize content to array format for SDK compatibility
+        if isinstance(self.content, str):
+            # Convert string to array with single text block
+            normalized_content = [{"type": "input_text", "text": self.content}]
+        elif isinstance(self.content, list):
+            # Already in array format
+            normalized_content = self.content
+        else:
+            # Handle None or other unexpected values - use empty array
+            normalized_content = []
+
         result = {
             "id": self.id,
             "object": "conversation.item",
             "conversation_id": self.conversation_id,
             "role": self.role,
-            "content": self.content,
+            "content": normalized_content,
             "created_at": int(self.created_at),
+            "tool_calls": self.tool_calls if self.tool_calls is not None else [],
         }
-        if self.tool_calls:
-            result["tool_calls"] = self.tool_calls
         if self.tool_call_id:
             result["tool_call_id"] = self.tool_call_id
         return result
@@ -55,11 +65,23 @@ class ConversationItem:
     @classmethod
     def from_dict(cls, data: dict, conversation_id: str) -> "ConversationItem":
         """Create ConversationItem from dictionary."""
+        # Accept both array and string content
+        content = data.get("content", "")
+        # Ensure content is never None - normalize to empty string or keep as list
+        if content is None:
+            content = ""
+        elif isinstance(content, list):
+            # Already in array format - keep as-is
+            pass
+        elif not content:
+            # Empty string or falsy value
+            content = ""
+
         return cls(
             id=data["id"],
             conversation_id=conversation_id,
             role=data["role"],
-            content=data.get("content", ""),
+            content=content,
             created_at=data.get("created_at", time.time()),
             tool_calls=data.get("tool_calls"),
             tool_call_id=data.get("tool_call_id"),
@@ -97,7 +119,9 @@ class Conversation:
             "id": self.id,
             "object": "conversation",
             "created_at": int(self.created_at),
+            "metadata": self.metadata,
             "item_count": len(self.items),
+            "items": [],  # Empty array for SDK compatibility (use get_items to fetch)
         }
 
     @classmethod
@@ -311,11 +335,14 @@ class ConversationManager:
                     logger.debug(f"Skipping item without role: {item_data}")
                     continue
 
+                # Handle content in both string and array formats
+                content = item_data.get("content", "")
+
                 item = ConversationItem(
                     id=item_id,
                     conversation_id=conversation_id,
                     role=role,
-                    content=item_data.get("content", ""),
+                    content=content,  # Accept both string and array
                     tool_calls=item_data.get("tool_calls"),
                     tool_call_id=item_data.get("tool_call_id"),
                 )
@@ -343,7 +370,16 @@ class ConversationManager:
         items = self.get_items(conversation_id, limit=10000, order="asc")
         messages = []
         for item in items:
-            msg = {"role": item["role"], "content": item["content"]}
+            content = item["content"]
+            # For chat completions, convert array content to string if needed
+            # (Chat Completions API expects string content, not array)
+            if isinstance(content, list) and len(content) > 0:
+                # Extract text from first content block
+                first_block = content[0]
+                if isinstance(first_block, dict):
+                    content = first_block.get("text", "")
+
+            msg = {"role": item["role"], "content": content}
             if item.get("tool_calls"):
                 msg["tool_calls"] = item["tool_calls"]
             if item.get("tool_call_id"):

@@ -162,7 +162,13 @@ async def get_conversation_items(
         raise HTTPException(404, f"Conversation not found: {conversation_id}")
 
     items = conversation_manager.get_items(conversation_id, limit, order)
-    return {"object": "list", "data": items, "has_more": False}
+    return {
+        "object": "list",
+        "data": items,
+        "first_id": items[0]["id"] if items else None,
+        "last_id": items[-1]["id"] if items else None,
+        "has_more": False,
+    }
 
 
 @router.post(
@@ -198,8 +204,28 @@ async def add_conversation_items(
     if not items:
         raise HTTPException(400, "No items provided")
 
+    logger.debug(f"[ADD_ITEMS] Conversation: {conversation_id}")
+    logger.debug(f"[ADD_ITEMS] Items to add: {len(items)}")
+    for i, item in enumerate(items):
+        item_type = item.get("type")
+        item_role = item.get("role")
+        has_content = bool(item.get("content"))
+        logger.debug(
+            f"[ADD_ITEMS]   Item {i}: type={item_type}, "
+            f"role={item_role}, has_content={has_content}"
+        )
+
     try:
         added = conversation_manager.add_items(conversation_id, items)
-        return {"object": "list", "data": added}
+        logger.debug(f"[ADD_ITEMS] Actually added: {len(added)} items")
+        response = {
+            "object": "list",
+            "data": added,
+            "first_id": added[0]["id"] if added else None,
+            "last_id": added[-1]["id"] if added else None,
+            "has_more": False,
+        }
+        logger.debug(f"[ADD_ITEMS] Response: {response}")
+        return response
     except ValueError as e:
         raise HTTPException(404, str(e)) from e

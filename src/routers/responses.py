@@ -183,7 +183,9 @@ async def create_response(
                 previous_response_id=previous_response_id,
             )
 
-            return response.to_dict()
+            response_dict = response.to_dict()
+            logger.debug(f"[BATCH] Response JSON: {response_dict}")
+            return response_dict
 
     except Exception as e:
         logger.error(f"Responses API error: {e}", exc_info=True)

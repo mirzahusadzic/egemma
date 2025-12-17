@@ -1,5 +1,5 @@
 from .file_util import is_likely_binary
-from .harmony import sanitize_thinking
+from .harmony import sanitize_for_display
 from .harmony_format import (
     format_assistant_message,
     format_conversation,
@@ -13,7 +13,7 @@ from .rate_limiter import get_in_memory_rate_limiter
 
 __all__ = [
     "is_likely_binary",
-    "sanitize_thinking",
+    "sanitize_for_display",
     "format_assistant_message",
     "format_conversation",
     "format_developer_message",

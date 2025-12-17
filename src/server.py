@@ -27,14 +27,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure our module loggers are set to INFO
+# Ensure our module loggers are set to DEBUG
 logging.getLogger("src.models.llm").setLevel(logging.INFO)
 logging.getLogger("src.streaming.handler").setLevel(logging.INFO)
 
 # Log startup message to confirm logging is working
-logger.info("=" * 80)
-logger.info("ℹ️  INFO LOGGING ENABLED - Reduced verbosity")
-logger.info("=" * 80)
+logger.debug("=" * 80)
+logger.debug("🐛 DEBUG LOGGING ENABLED - Full verbosity")
+logger.debug("=" * 80)
 
 
 # Define security scheme
