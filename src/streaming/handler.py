@@ -129,129 +129,141 @@ async def generate_streaming_response(
 
     # Iterate generator in threadpool to avoid blocking event loop
     stream_iter = iter(stream_response)
-    while True:
-        # Check for client disconnect before fetching next chunk
-        if await request.is_disconnected():
-            logger.debug("[HANDLER] Client disconnected, stopping stream")
-            # Close the generator to release the inference lock
-            if hasattr(stream_response, "close"):
-                stream_response.close()
-                logger.debug("[HANDLER] Stream generator closed (client disconnect)")
-            break
+    try:
+        while True:
+            # Check for client disconnect before fetching next chunk
+            if await request.is_disconnected():
+                logger.debug("[HANDLER] Client disconnected, stopping stream")
+                break
 
-        # Get next chunk in threadpool (doesn't block event loop)
-        chunk = await run_in_threadpool(safe_next, stream_iter)
-        if chunk is _sentinel:
-            break
+            # Get next chunk in threadpool (doesn't block event loop)
+            try:
+                chunk = await run_in_threadpool(safe_next, stream_iter)
+            except (GeneratorExit, StopIteration):
+                # Handle cases where the underlying generator is closed
+                chunk = _sentinel
 
-        choices = chunk.get("choices", [])
-        if choices:
-            delta = choices[0].get("delta", {})
-            logger.debug(f"[HANDLER] Delta received: {delta}")
+            if chunk is _sentinel:
+                break
 
-            # Handle reasoning/thinking (GPT-OSS Harmony -> OpenAI o-series)
-            thinking = delta.get("thinking", "")
-            if thinking:
-                logger.debug(f"[HANDLER] Thinking chunk: {repr(thinking[:100])}")
-                # Strip Harmony format directives from thinking text
-                cleaned_thinking = sanitize_for_display(thinking)
-                # Only emit non-empty thinking after sanitization
-                if cleaned_thinking:
-                    collected_thinking.append(cleaned_thinking)
-                    reasoning_sequence += 1
-                    yield create_reasoning_delta_event(
-                        response_id,
-                        cleaned_thinking,
-                        reasoning_item_id,
-                        output_index=0,  # Reasoning is always first output
-                        content_index=0,  # Single content block for reasoning
-                        sequence_number=reasoning_sequence,
-                    )
+            choices = chunk.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                logger.debug(f"[HANDLER] Delta received: {delta}")
 
-            # Handle text content
-            content = delta.get("content", "")
-            if content:
-                logger.debug(f"[HANDLER] Content chunk: {repr(content[:100])}")
-                # Always collect content for tool call parsing
-                collected_content.append(content)
+                # Handle reasoning/thinking (GPT-OSS Harmony -> OpenAI o-series)
+                thinking = delta.get("thinking", "")
+                if thinking:
+                    logger.debug(f"[HANDLER] Thinking chunk: {repr(thinking[:100])}")
+                    # Strip Harmony format directives from thinking text
+                    cleaned_thinking = sanitize_for_display(thinking)
+                    # Only emit non-empty thinking after sanitization
+                    if cleaned_thinking:
+                        collected_thinking.append(cleaned_thinking)
+                        reasoning_sequence += 1
+                        yield create_reasoning_delta_event(
+                            response_id,
+                            cleaned_thinking,
+                            reasoning_item_id,
+                            output_index=0,  # Reasoning is always first output
+                            content_index=0,  # Single content block for reasoning
+                            sequence_number=reasoning_sequence,
+                        )
 
-                # FIX: Don't stream tool call content as text
-                # Tool calls span multiple chunks, so we need state tracking
+                # Handle text content
+                content = delta.get("content", "")
+                if content:
+                    logger.debug(f"[HANDLER] Content chunk: {repr(content[:100])}")
+                    # Always collect content for tool call parsing
+                    collected_content.append(content)
 
-                # Check if we're currently in a tool call BEFORE processing
-                was_in_tool_call = in_tool_call
+                    # FIX: Don't stream tool call content as text
+                    # Tool calls span multiple chunks, so we need state tracking
 
-                # Detect start of Harmony format tool call
-                if "<|channel|>commentary" in content:
-                    in_tool_call = True
-                    logger.debug(
-                        "[HANDLER] Detected Harmony tool call start "
-                        "(commentary channel)"
-                    )
+                    # Check if we're currently in a tool call BEFORE processing
+                    was_in_tool_call = in_tool_call
 
-                # Detect end of Harmony format tool call
-                if "<|end|>" in content or "<|call|>" in content:
-                    in_tool_call = False
-                    logger.debug("[HANDLER] Detected Harmony tool call end")
-
-                # Detect standalone JSON tool calls
-                # Check for tool call patterns and track JSON depth
-                if not in_tool_call and (
-                    '{"command"' in content
-                    or '{"file_path"' in content
-                    or '{"path"' in content
-                    or '{"pattern"' in content
-                    or '{"search_path"' in content
-                    or '{"glob"' in content
-                    or '{"old_string"' in content
-                    or '{"notebook_path"' in content
-                    or '{"url"' in content
-                    or '{"query"' in content
-                    or '{"function"' in content
-                    or '{"tool"' in content
-                ):
-                    # Looks like start of standalone JSON tool call
-                    in_tool_call = True
-                    was_in_tool_call = True  # Suppress entire chunk
-                    json_brace_depth = 0
-
-                # Track brace depth for JSON objects
-                if json_brace_depth >= 0:
-                    for char in content:
-                        if char == "{":
-                            json_brace_depth += 1
-                        elif char == "}":
-                            json_brace_depth -= 1
-                            if json_brace_depth == 0 and in_tool_call:
-                                # JSON object complete
-                                in_tool_call = False
-
-                # Only stream if we were NOT in a tool call at the start
-                if not was_in_tool_call and not in_tool_call:
-                    # Sanitize content (preserve JSON - may be legitimate output)
-                    clean_content = sanitize_for_display(content, strip_json=False)
-                    if clean_content.strip():
+                    # Detect start of Harmony format tool call
+                    if "<|channel|>commentary" in content:
+                        in_tool_call = True
                         logger.debug(
-                            f"[HANDLER] Streaming content to user: "
-                            f"{repr(clean_content[:100])}"
+                            "[HANDLER] Detected Harmony tool call start "
+                            "(commentary channel)"
                         )
-                        yield create_text_delta_event(
-                            response_id, clean_content, message_item_id
+
+                    # Detect end of Harmony format tool call
+                    if "<|end|>" in content or "<|call|>" in content:
+                        in_tool_call = False
+                        logger.debug("[HANDLER] Detected Harmony tool call end")
+
+                    # Detect standalone JSON tool calls
+                    # Check for tool call patterns and track JSON depth
+                    if not in_tool_call and (
+                        '{"command"' in content
+                        or '{"file_path"' in content
+                        or '{"path"' in content
+                        or '{"pattern"' in content
+                        or '{"search_path"' in content
+                        or '{"glob"' in content
+                        or '{"old_string"' in content
+                        or '{"notebook_path"' in content
+                        or '{"url"' in content
+                        or '{"query"' in content
+                        or '{"function"' in content
+                        or '{"tool"' in content
+                    ):
+                        # Looks like start of standalone JSON tool call
+                        in_tool_call = True
+                        was_in_tool_call = True  # Suppress entire chunk
+                        json_brace_depth = 0
+
+                    # Track brace depth for JSON objects
+                    if json_brace_depth >= 0:
+                        for char in content:
+                            if char == "{":
+                                json_brace_depth += 1
+                            elif char == "}":
+                                json_brace_depth -= 1
+                                if json_brace_depth == 0 and in_tool_call:
+                                    # JSON object complete
+                                    in_tool_call = False
+
+                    # Only stream if we were NOT in a tool call at the start
+                    if not was_in_tool_call and not in_tool_call:
+                        # Sanitize content (preserve JSON - may be legitimate output)
+                        clean_content = sanitize_for_display(content, strip_json=False)
+                        if clean_content.strip():
+                            logger.debug(
+                                f"[HANDLER] Streaming content to user: "
+                                f"{repr(clean_content[:100])}"
+                            )
+                            yield create_text_delta_event(
+                                response_id, clean_content, message_item_id
+                            )
+                    else:
+                        logger.debug(
+                            f"[HANDLER] Suppressing tool call content: "
+                            f"{repr(content[:50])}"
                         )
-                else:
-                    logger.debug(
-                        f"[HANDLER] Suppressing tool call content: {repr(content[:50])}"
-                    )
 
-            # Note: Tool calls are NOT streamed by llama-cpp.
-            # We parse them from collected_content after streaming.
+                # Note: Tool calls are NOT streamed by llama-cpp.
+                # We parse them from collected_content after streaming.
 
-            # Extract usage if present
-            chunk_usage = chunk.get("usage")
-            if chunk_usage:
-                usage.input_tokens = chunk_usage.get("prompt_tokens", 0)
-                usage.output_tokens = chunk_usage.get("completion_tokens", 0)
-                usage.total_tokens = chunk_usage.get("total_tokens", 0)
+                # Extract usage if present
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    usage.input_tokens = chunk_usage.get("prompt_tokens", 0)
+                    usage.output_tokens = chunk_usage.get("completion_tokens", 0)
+                    usage.total_tokens = chunk_usage.get("total_tokens", 0)
+    finally:
+        # Crucial: Ensure the generator is closed to release the inference lock
+        # in ChatModelWrapper, even if an exception occurs or client disconnects.
+        if hasattr(stream_response, "close"):
+            try:
+                stream_response.close()
+                logger.debug("[HANDLER] Stream generator closed in finally block")
+            except Exception as e:
+                logger.warning(f"[HANDLER] Error closing stream generator: {e}")
 
     # Build final response
     output = []
