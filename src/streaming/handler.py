@@ -297,7 +297,7 @@ async def generate_streaming_response(
     if chat_tools and raw_output_text:
         parsed_tool_calls = chat_model_wrapper._parse_tool_calls(raw_output_text) or []
 
-    # If we have tool calls, add them and clear text output
+    # If we have tool calls, add them and sanitize text output
     if parsed_tool_calls:
         for tc in parsed_tool_calls:
             func = tc.get("function", {})
@@ -315,14 +315,17 @@ async def generate_streaming_response(
             # Emit output_item.added event for SDK
             yield create_output_item_added_event(response_id, fc_item, output_index)
             output_index += 1
-        # Clear text output when we have tool calls (like batch mode)
-        output_text = ""
+        # Sanitize text to remove JSON tool calls but preserve conversational text
+        # Example: "I'll check that. {"command":"ls"}" -> "I'll check that."
+        output_text = sanitize_for_display(raw_output_text, strip_json=True)
     else:
         # No tool calls - sanitize for display (preserve JSON in output)
         output_text = sanitize_for_display(raw_output_text, strip_json=False)
 
     # Always add message output (even if empty) to ensure SDK has a message item
-    if output_text or not parsed_tool_calls:
+    # Treat whitespace-only text as empty when tool calls are present
+    has_meaningful_text = output_text.strip() if parsed_tool_calls else output_text
+    if has_meaningful_text or not parsed_tool_calls:
         message_item = {
             "id": message_item_id,
             "type": "message",
