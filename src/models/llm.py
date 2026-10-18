@@ -182,11 +182,12 @@ class ChatModelWrapper:
         """Generate a non-streaming completion using Harmony-formatted prompt."""
         # Use create_completion with raw Harmony-formatted prompt
         # Stop tokens for Harmony protocol
-        # Note: <|end|> is NOT a stop token - it separates messages (e.g., analysis -> commentary)
+        # <|end|> separates messages, for example analysis -> commentary.
+        # It is not a stop token.
         # Only <|return|> (done) and <|call|> (tool call) should stop inference
         stop_tokens = ["<|return|>", "<|call|>"]
 
-        # Acquire lock to prevent concurrent inference (llama-cpp-python isn't thread-safe)
+        # llama-cpp-python is not thread-safe; serialize inference.
         with self._inference_lock:
             response = self.model.create_completion(
                 prompt=prompt,
@@ -292,7 +293,8 @@ class ChatModelWrapper:
         prompt_tokens = self._count_tokens(prompt)
 
         # Stop tokens for Harmony protocol
-        # Note: <|end|> is NOT a stop token - it separates messages (e.g., analysis -> commentary)
+        # <|end|> separates messages, for example analysis -> commentary.
+        # It is not a stop token.
         # Only <|return|> (done) and <|call|> (tool call) should stop inference
         stop_tokens = ["<|return|>", "<|call|>"]
 
@@ -301,7 +303,7 @@ class ChatModelWrapper:
         logger.debug(f"[STREAM] Stop tokens: {stop_tokens}")
         logger.debug(f"[STREAM] Include thinking: {include_thinking}")
 
-        # Acquire lock to prevent concurrent inference (llama-cpp-python isn't thread-safe)
+        # llama-cpp-python is not thread-safe; serialize inference.
         # Lock is held for entire streaming duration via try/finally
         self._inference_lock.acquire()
         try:
@@ -325,27 +327,29 @@ class ChatModelWrapper:
             final_content_streamed = False
             tool_prefix_emitted = False  # Track if we've emitted tool prefix
             buffer = ""
-    
+
             # Track completion tokens for final usage report
             completion_tokens = 0
             total_content_chars = 0
-    
+
             chunk_count = 0
             for chunk in stream:
                 chunk_count += 1
                 # create_completion returns "text" directly in streaming mode
                 finish_reason = chunk["choices"][0].get("finish_reason")
                 content = chunk["choices"][0].get("text", "")
-    
+
                 if content:
-                    logger.debug(f"[STREAM CHUNK {chunk_count}] Content: {repr(content)}")
+                    logger.debug(
+                        f"[STREAM CHUNK {chunk_count}] Content: {repr(content)}"
+                    )
                     buffer += content
-    
+
                     # Check for Harmony format markers
                     if "<|channel|>" in buffer and not harmony_detected:
                         harmony_detected = True
                         logger.debug("[STREAM] Harmony format detected in buffer")
-    
+
                     if harmony_detected:
                         # Harmony format parsing
                         # Check for full analysis marker including <|start|>assistant
@@ -355,17 +359,30 @@ class ChatModelWrapper:
                             or "<|channel|>analysis<|message|>" in buffer
                         ) and not in_thinking:
                             in_thinking = True
-                            logger.debug("[STREAM] Entering ANALYSIS channel (thinking)")
+                            logger.debug(
+                                "[STREAM] Entering ANALYSIS channel (thinking)"
+                            )
                             # Handle both full and partial markers for robustness
-                            if "<|start|>assistant<|channel|>analysis<|message|>" in buffer:
+                            if (
+                                "<|start|>assistant<|channel|>analysis<|message|>"
+                                in buffer
+                            ):
                                 buffer = buffer.split(
                                     "<|start|>assistant<|channel|>analysis<|message|>"
                                 )[-1]
-                                logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
+                                logger.debug(
+                                    "[STREAM] Buffer after analysis split: "
+                                    f"{buffer[:100]!r}"
+                                )
                             else:
-                                buffer = buffer.split("<|channel|>analysis<|message|>")[-1]
-                                logger.debug(f"[STREAM] Buffer after analysis split: {repr(buffer[:100])}")
-    
+                                buffer = buffer.split("<|channel|>analysis<|message|>")[
+                                    -1
+                                ]
+                                logger.debug(
+                                    "[STREAM] Buffer after analysis split: "
+                                    f"{buffer[:100]!r}"
+                                )
+
                         # Check for final channel OR commentary channel (tool calls)
                         # Tool calls: <|channel|>commentary to=functions.X ...
                         # Only detect commentary transition if we're not already
@@ -380,15 +397,18 @@ class ChatModelWrapper:
                             if "<|channel|>final<|message|>" in buffer:
                                 logger.debug("[STREAM] Entering FINAL channel")
                             else:
-                                logger.debug("[STREAM] Entering COMMENTARY channel (tool call)")
+                                logger.debug(
+                                    "[STREAM] Entering COMMENTARY channel (tool call)"
+                                )
                             # Extract tool call prefix for commentary channel
                             # IMPORTANT: Preserve full Harmony format for parser
                             # Template line 297:
-                            # to=functions.{name}<|channel|>commentary json<|message|>{...}
+                            # to=functions.{name}<|channel|>commentary
+                            # json<|message|>{...}
                             tool_prefix = ""
                             if "<|channel|>commentary" in buffer:
                                 import re
-    
+
                                 # Extract the FULL tool call prefix
                                 # (preserve all markers!)
                                 # NOTE: Model outputs REVERSED order from template!
@@ -402,16 +422,20 @@ class ChatModelWrapper:
                                 )
                                 if match:
                                     tool_prefix = match.group(1)
-    
+
                             # Determine which channel marker to split on
                             if "<|channel|>final<|message|>" in buffer:
                                 split_marker = "<|channel|>final<|message|>"
                             else:
                                 # For commentary, split on <|message|> after it
                                 split_marker = "<|message|>"
-    
+
                             # Emit thinking before transitioning to final
-                            if in_thinking and include_thinking and not thinking_emitted:
+                            if (
+                                in_thinking
+                                and include_thinking
+                                and not thinking_emitted
+                            ):
                                 thinking_content = buffer.split(split_marker)[0]
                                 # Clean up to just get the thinking part
                                 if "<|channel|>commentary" in thinking_content:
@@ -442,15 +466,15 @@ class ChatModelWrapper:
                                         ],
                                     }
                                 thinking_emitted = True
-    
+
                             in_thinking = False
                             in_final = True
                             # Extract JSON part that comes after the tool prefix
                             json_part = buffer.split(split_marker)[-1]
                             # Prepend tool prefix for proper parsing later
                             buffer = tool_prefix + json_part
-    
-                            # Emit tool prefix immediately so it's included in output (ONCE)
+
+                            # Emit the tool prefix into the output once.
                             if tool_prefix and not tool_prefix_emitted:
                                 final_content_streamed = True
                                 tool_prefix_emitted = True  # Mark as emitted
@@ -468,7 +492,7 @@ class ChatModelWrapper:
                                         }
                                     ],
                                 }
-    
+
                                 # Also emit the JSON part that's already in the buffer
                                 if json_part:
                                     total_content_chars += len(json_part)
@@ -487,7 +511,7 @@ class ChatModelWrapper:
                                     }
                                     # Clear the buffer since we've emitted everything
                                     buffer = ""
-    
+
                         elif in_final:
                             # Stream final content, cleaning Harmony tokens
                             clean = content
@@ -532,13 +556,16 @@ class ChatModelWrapper:
                                 }
                             ],
                         }
-    
+
                 if finish_reason:
                     # For Harmony format that didn't complete cleanly, emit buffered
                     if harmony_detected and in_thinking and not thinking_emitted:
-                        # Buffer contains raw thinking content (markers already stripped)
+                        # Buffer contains thinking content without protocol markers.
                         # Emit it directly as thinking without parsing
-                        logger.debug(f"[STREAM] Stream ended in thinking mode, emitting buffer as thinking: {repr(buffer[:100])}")
+                        logger.debug(
+                            "[STREAM] Stream ended in thinking mode; emitting: "
+                            f"{buffer[:100]!r}"
+                        )
                         if include_thinking and buffer:
                             yield {
                                 "id": completion_id,
@@ -556,7 +583,7 @@ class ChatModelWrapper:
                             thinking_emitted = True
                             # Clear buffer after emitting thinking
                             buffer = ""
-    
+
                     # Emit any remaining buffer content when in_final mode
                     # This handles tool calls that arrived in the same chunk as
                     # <|channel|>final<|message|> and weren't streamed yet
@@ -594,16 +621,20 @@ class ChatModelWrapper:
                                     }
                                 ],
                             }
-    
+
                     # Calculate completion tokens from content
-                    completion_tokens = self._count_tokens_from_chars(total_content_chars)
-    
+                    completion_tokens = self._count_tokens_from_chars(
+                        total_content_chars
+                    )
+
                     # Detect finish_reason="length" when max_tokens is reached
                     # llama-cpp often returns "stop" even when hitting max_tokens
                     final_finish_reason = finish_reason
-                    if completion_tokens >= max_tokens - 10:  # Within 10 tokens of limit
+                    if (
+                        completion_tokens >= max_tokens - 10
+                    ):  # Within 10 tokens of limit
                         final_finish_reason = "length"
-    
+
                     # Yield final chunk with usage (OpenAI SDK requirement)
                     yield {
                         "id": completion_id,
@@ -611,7 +642,11 @@ class ChatModelWrapper:
                         "created": created,
                         "model": self.model_name,
                         "choices": [
-                            {"index": 0, "delta": {}, "finish_reason": final_finish_reason}
+                            {
+                                "index": 0,
+                                "delta": {},
+                                "finish_reason": final_finish_reason,
+                            }
                         ],
                         "usage": {
                             "prompt_tokens": prompt_tokens,

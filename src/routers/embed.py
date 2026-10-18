@@ -1,10 +1,12 @@
 import logging
+import math
 from enum import Enum
 from functools import lru_cache
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..models.embedding import SentenceTransformerWrapper
@@ -39,6 +41,23 @@ class PromptNames(str, Enum):
     SUMMARIZATION = "Summarization"
 
 
+class TextEmbeddingBatchRequest(BaseModel):
+    texts: list[str] = Field(
+        min_length=1,
+        max_length=settings.EMBEDDING_BATCH_MAX_INPUTS,
+    )
+    dimensions: EmbeddingDimensions = EmbeddingDimensions.DIM_128
+    prompt_name: PromptNames = PromptNames.STS
+
+
+class TextEmbeddingBatchResponse(BaseModel):
+    model: str
+    revision: str
+    dimensions: int
+    prompt_name: str
+    embeddings: list[list[float]]
+
+
 # Shared model wrapper instance (initialized in server.py)
 embedding_model_wrapper: SentenceTransformerWrapper | None = None
 
@@ -58,6 +77,67 @@ DEFAULT_PROMPT_NAME_QUERY = Query(
 
 # Create router
 router = APIRouter(tags=["Embeddings"])
+
+
+@router.post(
+    "/embed/texts",
+    summary="Embed a bounded text batch",
+    response_model=TextEmbeddingBatchResponse,
+    dependencies=[
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.EMBED_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.EMBED_RATE_LIMIT_CALLS,
+            )
+        )
+    ],
+)
+async def embed_texts(request: TextEmbeddingBatchRequest):
+    if embedding_model_wrapper is None or embedding_model_wrapper.model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding model not loaded.",
+        )
+    if any(
+        not text or len(text) > settings.EMBEDDING_MAX_INPUT_CHARS
+        for text in request.texts
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Every text must be nonempty and within the configured character bound."
+            ),
+        )
+
+    try:
+        encoded = await run_in_threadpool(
+            embedding_model_wrapper.encode_many,
+            request.texts,
+            request.prompt_name,
+        )
+        dimensions = request.dimensions.value
+        if len(encoded) != len(request.texts):
+            raise RuntimeError("Embedding result count does not match input count")
+        embeddings = [row[:dimensions].tolist() for row in encoded]
+        if any(
+            len(vector) != dimensions
+            or any(not math.isfinite(coordinate) for coordinate in vector)
+            for vector in embeddings
+        ):
+            raise RuntimeError("Embedding result has invalid coordinates")
+        return TextEmbeddingBatchResponse(
+            model=settings.EMBEDDING_MODEL_NAME,
+            revision=settings.EMBEDDING_MODEL_REVISION,
+            dimensions=dimensions,
+            prompt_name=request.prompt_name.value,
+            embeddings=embeddings,
+        )
+    except Exception as exc:
+        logger.exception("Batch embedding failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Batch embedding failed: {exc}",
+        ) from exc
 
 
 @router.post(

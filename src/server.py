@@ -12,12 +12,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .api.openai.compat import ModelInfo, ModelsResponse
 from .api.openai.conversations import ConversationManager
 from .config import get_conversations_dir, settings
+from .models.amrbart import AMRBartModelWrapper
 from .models.embedding import SentenceTransformerWrapper
 from .models.llm import ChatModelWrapper
 from .models.summarization import SummarizationModelWrapper
 
 # Import routers
-from .routers import ast_parser, conversations, embed, responses, summarize
+from .routers import amr, ast_parser, conversations, embed, responses, summarize
 
 # Configure logging with explicit format to ensure visibility
 logging.basicConfig(
@@ -30,6 +31,9 @@ logger = logging.getLogger(__name__)
 # Ensure our module loggers are set to DEBUG
 logging.getLogger("src.models.llm").setLevel(logging.INFO)
 logging.getLogger("src.streaming.handler").setLevel(logging.INFO)
+# PENMAN logs every decoded graph at INFO; keep model payloads in API responses,
+# not in the server console.
+logging.getLogger("penman").setLevel(logging.WARNING)
 
 # Log startup message to confirm logging is working
 logger.debug("=" * 80)
@@ -77,36 +81,50 @@ async def lifespan(app: fastapi.FastAPI):
             f"Persona directory not found at '{persona_dir}'. Please create it."
         )
 
-    # Load embedding model
+    logger.info("Loading eGemma model profile: %s", settings.MODEL_PROFILE)
+
+    # Embeddings are shared by both the workbench and semantic profiles.
     embed.embedding_model_wrapper = SentenceTransformerWrapper()
     embed.embedding_model_wrapper.load_model()
+
+    # Load the AMR parser only when explicitly selected or enabled.
+    if settings.amrbart_enabled:
+        amr_wrapper = AMRBartModelWrapper()
+        amr_wrapper.load_model()
+        amr.amrbart_model_wrapper = amr_wrapper
+    else:
+        amr.amrbart_model_wrapper = None
 
     # Load summarization model
     # Always initialize summarization wrapper (for Gemini API support)
     # but only load local model if SUMMARY_LOCAL_ENABLED is True
     summarization_wrapper = SummarizationModelWrapper()
-    if settings.SUMMARY_LOCAL_ENABLED:
+    if settings.local_summary_enabled:
         summarization_wrapper.load_local_model()
     # Always try to initialize Gemini client if API key is present
-    if settings.GEMINI_API_KEY:
+    if settings.gemini_summary_enabled:
         summarization_wrapper.load_gemini_client()
     summarize.summarization_model_wrapper = summarization_wrapper
 
     # Load chat model (GPT-OSS-20B) if enabled
-    if settings.CHAT_MODEL_ENABLED:
+    if settings.chat_enabled:
         chat_wrapper = ChatModelWrapper()
         chat_wrapper.load_model()
         responses.chat_model_wrapper = chat_wrapper
     else:
         responses.chat_model_wrapper = None
 
-    # Initialize conversation manager (Conversations API)
-    # Store conversations in ~/.egemma/{model-name}/conversations
-    conv_dir = get_conversations_dir(settings.CHAT_MODEL_NAME)
-    conv_manager = ConversationManager(conversations_dir=conv_dir)
-    conversations.conversation_manager = conv_manager
-    responses.conversation_manager = conv_manager
-    logger.info(f"Conversation manager initialized: {conv_dir}")
+    # Conversation state belongs to the workbench surface, not the semantic-only
+    # parser/embedding profile.
+    if settings.MODEL_PROFILE == "workbench":
+        conv_dir = get_conversations_dir(settings.CHAT_MODEL_NAME)
+        conv_manager = ConversationManager(conversations_dir=conv_dir)
+        conversations.conversation_manager = conv_manager
+        responses.conversation_manager = conv_manager
+        logger.info("Conversation manager initialized: %s", conv_dir)
+    else:
+        conversations.conversation_manager = None
+        responses.conversation_manager = None
 
     yield
 
@@ -114,10 +132,10 @@ async def lifespan(app: fastapi.FastAPI):
 app = fastapi.FastAPI(
     title="Code Intelligence API (eGemma)",
     description=(
-        "Local AI workbench for embeddings, summarization, and OpenAI Agent "
-        "SDK–compatible workflows. Supports Gemma models, GPT-OSS tool-calling, "
-        "hardware acceleration, caching, and rate limiting, plus cloud-offloaded, "
-        "persona-driven summarization through Gemini."
+        "Local AI workbench for embeddings, semantic parsing, summarization, and "
+        "OpenAI Agent SDK–compatible workflows. Supports Gemma models, AMRBART, "
+        "GPT-OSS tool-calling, hardware acceleration, caching, and rate limiting, "
+        "plus cloud-offloaded, persona-driven summarization through Gemini."
     ),
     version="0.4.0",
     docs_url=None,
@@ -144,6 +162,10 @@ async def rate_limits():
             "calls": settings.EMBED_RATE_LIMIT_CALLS,
             "seconds": settings.EMBED_RATE_LIMIT_SECONDS,
         },
+        "amr": {
+            "calls": settings.AMRBART_RATE_LIMIT_CALLS,
+            "seconds": settings.AMRBART_RATE_LIMIT_SECONDS,
+        },
         "summarize": {
             "calls": settings.SUMMARIZE_RATE_LIMIT_CALLS,
             "seconds": settings.SUMMARIZE_RATE_LIMIT_SECONDS,
@@ -165,11 +187,12 @@ async def health_check():
     Checks if the server and models are running.
     """
 
-    response = {"status": "ok"}
+    response = {"status": "ok", "model_profile": settings.MODEL_PROFILE}
 
     # Check embedding model
     embedding_status = {
         "name": settings.EMBEDDING_MODEL_NAME,
+        "revision": settings.EMBEDDING_MODEL_REVISION,
         "status": (
             "loaded"
             if embed.embedding_model_wrapper
@@ -180,7 +203,7 @@ async def health_check():
     response["embedding_model"] = embedding_status
 
     # Check local summarization model if enabled
-    if settings.SUMMARY_LOCAL_ENABLED:
+    if settings.local_summary_enabled:
         summarization_status = {
             "name": settings.SUMMARY_MODEL_NAME,
             "basename": settings.SUMMARY_MODEL_BASENAME,
@@ -197,13 +220,14 @@ async def health_check():
 
     # Check Gemini API status
     gemini_status = {
+        "enabled": settings.gemini_summary_enabled,
         "api_key_set": bool(settings.GEMINI_API_KEY),
         "default_model": settings.GEMINI_DEFAULT_MODEL,
     }
     response["gemini_api"] = gemini_status
 
     # Check chat model status (GPT-OSS-20B)
-    if settings.CHAT_MODEL_ENABLED:
+    if settings.chat_enabled:
         chat_status = {
             "name": settings.CHAT_MODEL_NAME,
             "path": settings.CHAT_MODEL_PATH,
@@ -219,6 +243,24 @@ async def health_check():
         response["chat_model"] = chat_status
     else:
         response["chat_model"] = {"status": "disabled"}
+
+    if settings.amrbart_enabled:
+        response["amrbart_model"] = {
+            "name": settings.AMRBART_MODEL_NAME,
+            "revision": settings.AMRBART_MODEL_REVISION,
+            "status": (
+                "loaded"
+                if amr.amrbart_model_wrapper and amr.amrbart_model_wrapper.is_loaded
+                else "not_loaded"
+            ),
+            "device": (
+                amr.amrbart_model_wrapper.device
+                if amr.amrbart_model_wrapper
+                else "not_loaded"
+            ),
+        }
+    else:
+        response["amrbart_model"] = {"status": "disabled"}
 
     return fastapi.responses.JSONResponse(content=response)
 
@@ -256,7 +298,7 @@ async def list_models():
 
     # Add chat model if enabled
     if (
-        settings.CHAT_MODEL_ENABLED
+        settings.chat_enabled
         and responses.chat_model_wrapper
         and responses.chat_model_wrapper.is_loaded
     ):
@@ -277,6 +319,9 @@ async def list_models():
 
 # Embedding router
 app.include_router(embed.router, dependencies=[Depends(get_api_key)])
+
+# Abstract Meaning Representation router
+app.include_router(amr.router, dependencies=[Depends(get_api_key)])
 
 # Summarization router
 app.include_router(summarize.router, dependencies=[Depends(get_api_key)])

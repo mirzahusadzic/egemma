@@ -41,7 +41,10 @@ class SentenceTransformerWrapper:
         token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
 
         self.model = SentenceTransformer(
-            settings.EMBEDDING_MODEL_NAME, device=device, token=token
+            settings.EMBEDDING_MODEL_NAME,
+            device=device,
+            token=token,
+            revision=settings.EMBEDDING_MODEL_REVISION,
         )
 
     def encode(
@@ -60,6 +63,11 @@ class SentenceTransformerWrapper:
             formatted_text = text
 
         return self.model.encode(formatted_text, prompt_name=prompt_name)
+
+    def encode_many(self, texts: list[str], prompt_name: str | None = None):
+        if self.model is None:
+            raise RuntimeError("Model not loaded")
+        return self.model.encode(texts, prompt_name=prompt_name)
 
     @property
     def supported_prompts(self) -> list[str]:

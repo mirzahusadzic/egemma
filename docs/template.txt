@@ -1,4 +1,10 @@
 {#-
+  GPT-OSS chat template from OpenAI, licensed under Apache-2.0.
+  Source: https://huggingface.co/openai/gpt-oss-20b/blob/6cee5e81ee83917806bbde320786a8fb61efebee/chat_template.jinja
+  Local modification: this attribution comment; template body is unchanged.
+  See ../LICENSES/Apache-2.0.txt and ../THIRD_PARTY_NOTICES.md.
+#}
+{#-
   In addition to the normal inputs of `messages` and `tools`, this template also accepts the
   following kwargs:
   - "builtin_tools": A list, can contain "browser" and/or "python".

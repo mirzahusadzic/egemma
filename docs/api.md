@@ -7,11 +7,105 @@ Complete API documentation for all eGemma endpoints.
 
 ---
 
+## Abstract Meaning Representation
+
+### POST /amr/parse
+
+Parse natural-language text into an attributed AMRBART candidate graph. Set
+`MODEL_PROFILE=semantic` in `.env`, then start eGemma with
+`uv run uvicorn src.server:app --host localhost --port 8000` to load AMRBART
+together with the Matryoshka embedding model while leaving chat and
+summarization models unloaded.
+
+```bash
+curl -X POST "http://localhost:8000/amr/parse" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "The parser passes the tests, but changes the dependency graph."
+  }'
+```
+
+The response contains:
+
+| Field | Meaning |
+|-------|---------|
+| `model`, `revision` | Exact parser identity |
+| `device` | Execution device used for the query |
+| `input_tokens`, `output_tokens` | Complete source-token count including boundaries, and generated-token count; output is zero when inference is skipped |
+| `linearized` | Indented pointer graph for valid parses; raw model output if decoding fails |
+| `linearized_raw` | Exact AMRBART pointer-token return, retained without formatting |
+| `penman` | Validated standard PENMAN graph, or `null` |
+| `top`, `triples` | Root and ordered typed triples from that validated graph |
+| `fragments` | Diagnostic relations from an invalid graph; never a substitute for validated triples |
+| `decode_status`, `decode_error` | Mechanical decoding result |
+
+The endpoint does not claim that the graph is factually true, source-aligned,
+or authorized. It exposes one learned semantic parse for downstream inspection.
+JSON escapes newlines inside both formatted graph strings. Use
+`jq -r '.linearized'` or `jq -r '.penman'` to print their indentation.
+
+Decoding uses PENMAN's AMR model. Lexical roles such as `:consist-of` and
+`:prep-out-of` keep their direction; genuine inverses such as `:ARG0-of` are
+decoded as reversed `:ARG0` edges. The full output must contain one complete
+graph with concepts and relation targets. eGemma does not repair missing
+structure or apply downstream semantic canonicalization.
+
+### POST /amr/parse-batch
+
+Parse a bounded batch sequentially, returning the same result schema for each
+input in its original order:
+
+```bash
+curl -X POST "http://localhost:8000/amr/parse-batch" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"texts":["The engineer reported a failure.","The repair needs approval."]}'
+```
+
+Both AMR endpoints return HTTP 200 for these per-input results:
+
+| `decode_status` | Meaning |
+| --- | --- |
+| `ok` | A complete graph was decoded; `penman`, `top`, and `triples` are available. |
+| `invalid` | Inference ran but decoding failed. Raw output, the error, and diagnostic fragments are retained; `penman` and `top` are `null`, and `triples` is empty. |
+| `input_too_long` | The complete source exceeds the token budget. Inference is skipped; graph strings are empty, `penman` and `top` are `null`, and triples/fragments and output tokens are empty/zero. `decode_error` states the count and limit. |
+
+The default limits are 1–64 inputs per batch, 1–16,384 characters per input,
+400 source tokens, and 1,024 generated tokens. Source tokens include the text
+boundaries and the three appended graph tokens:
+`<s> text </s> <AMR> <mask> </AMR>`. The source is never silently truncated;
+split long inputs explicitly. The character bound is a separate request limit,
+not a guarantee that the text fits the tokenizer budget.
+
+An invalid batch shape or character bound returns HTTP 422 for the request.
+Invalid graphs and token-overflow results do not discard other batch items;
+an unexpected inference/runtime failure returns HTTP 500.
+
+## Batched semantic embeddings
+
+### POST /embed/texts
+
+Embed 1–256 texts through the pinned local EmbeddingGemma revision. The request
+selects one supported prompt and one Matryoshka dimension (128 by default; 256,
+512 or 768 explicitly); the response repeats the exact model, revision,
+dimension and prompt.
+JSON is wire transport only—callers decide durable representation.
+Each input must contain 1–16,384 characters by default. The encoder has a
+2,048-token window, including any task prompt, and may truncate beyond it;
+split longer inputs before embedding when full source coverage is required.
+
+---
+
 ## Responses API (OpenAI Agent SDK)
 
 ### POST /v1/responses
 
-The primary endpoint for agentic workflows. Fully compatible with the OpenAI Agent SDK (`@openai/agents`).
+The local Responses API subset used by the OpenAI Agents SDK examples in
+`scripts/`. Supports text, function calls, and SSE streaming; hosted tools and
+full OpenAI API parity are not provided. The `model` field labels the response;
+the server uses its configured local chat model rather than loading a model
+selected by each request.
 
 **Request Body:**
 
@@ -21,12 +115,17 @@ The primary endpoint for agentic workflows. Fully compatible with the OpenAI Age
 | `input` | string/array | Yes | User input (string or array of input items) |
 | `instructions` | string | No | System instructions |
 | `max_output_tokens` | integer | No | Max tokens to generate (default: 4096) |
-| `temperature` | float | No | Sampling temperature 0.0-2.0 (default: 1.0) |
-| `reasoning_effort` | string | No | Thinking depth: low, medium, high (default: high) |
+| `temperature` | float | No | Sampling temperature (default: 0.3) |
 | `stream` | boolean | No | Enable SSE streaming (default: false) |
 | `tools` | array | No | Tool definitions for function calling |
 | `tool_choice` | string/object | No | Tool selection mode |
-| `previous_response_id` | string | No | Continue from previous response |
+| `conversation` / `previous_response_id` | string | No | Load stored conversation history by conversation ID |
+
+Reasoning effort is configured server-side with `CHAT_REASONING_EFFORT`
+(`high` by default); per-request reasoning overrides are not implemented.
+For persisted history, pass a conversation ID created by `/v1/conversations`
+as `conversation` or `previous_response_id`. Returned response IDs are not a
+general-purpose persisted response store.
 
 **Example (Non-streaming):**
 
@@ -394,10 +493,16 @@ curl "http://localhost:8000/rate-limits"
 ```json
 {
   "embed": {"calls": 5, "seconds": 10},
+  "amr": {"calls": 10, "seconds": 60},
   "summarize": {"calls": 2, "seconds": 60},
-  "chat": {"calls": 10, "seconds": 60}
+  "chat": {"calls": 100, "seconds": 60},
+  "conversation": {"calls": 100, "seconds": 60}
 }
 ```
+
+Budgets are per client IP, HTTP method, and matched route template. Different
+conversation IDs share the same route's allowance. Storage is in-process;
+these limits are intended for a single worker.
 
 ---
 
@@ -434,8 +539,10 @@ All endpoints return standard HTTP error codes:
 | Code | Description |
 |------|-------------|
 | 400 | Bad request (invalid parameters) |
-| 401 | Unauthorized (invalid/missing API key) |
+| 401 | Unauthorized (invalid API key) |
+| 403 | Missing or malformed bearer credentials |
 | 404 | Not found (invalid conversation ID, etc.) |
+| 422 | Request validation failed |
 | 429 | Too many requests (rate limit exceeded) |
 | 500 | Internal server error |
 | 503 | Service unavailable (model not loaded) |

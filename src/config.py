@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,7 +14,22 @@ def get_conversations_dir(model_name: str) -> Path:
 
 class Settings(BaseSettings):
     WORKBENCH_API_KEY: str | None = None
+    MODEL_PROFILE: Literal["workbench", "semantic"] = "workbench"
     EMBEDDING_MODEL_NAME: str = "google/embeddinggemma-300m"
+    EMBEDDING_MODEL_REVISION: str = "57c266a740f537b4dc058e1b0cda161fd15afa75"
+    EMBEDDING_BATCH_MAX_INPUTS: int = 256
+    EMBEDDING_MAX_INPUT_CHARS: int = 16_384
+    AMRBART_MODEL_ENABLED: bool = False
+    AMRBART_MODEL_NAME: str = "xfbai/AMRBART-large-finetuned-AMR3.0-AMRParsing-v2"
+    AMRBART_MODEL_REVISION: str = "12f7e78e3dfa6f37ddbbf77c4c152b4fc39bc512"
+    AMRBART_DEVICE: Literal["auto", "cpu", "cuda", "mps"] = "auto"
+    AMRBART_MAX_SOURCE_TOKENS: int = 400
+    AMRBART_MAX_GRAPH_TOKENS: int = 1024
+    AMRBART_NUM_BEAMS: int = 5
+    AMRBART_MAX_INPUT_CHARS: int = 16_384
+    AMRBART_BATCH_MAX_INPUTS: int = 64
+    AMRBART_RATE_LIMIT_SECONDS: int = 60
+    AMRBART_RATE_LIMIT_CALLS: int = 10
     SUMMARY_LOCAL_ENABLED: bool = True
     # Chat Model Settings (GPT-OSS-20B)
     CHAT_MODEL_ENABLED: bool = True
@@ -73,6 +89,26 @@ class Settings(BaseSettings):
     }
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def amrbart_enabled(self) -> bool:
+        """Whether the AMR parser belongs to the selected model profile."""
+        return self.MODEL_PROFILE == "semantic" or self.AMRBART_MODEL_ENABLED
+
+    @property
+    def chat_enabled(self) -> bool:
+        """Whether the selected profile permits the local chat model."""
+        return self.MODEL_PROFILE == "workbench" and self.CHAT_MODEL_ENABLED
+
+    @property
+    def local_summary_enabled(self) -> bool:
+        """Whether the selected profile permits the local summarization model."""
+        return self.MODEL_PROFILE == "workbench" and self.SUMMARY_LOCAL_ENABLED
+
+    @property
+    def gemini_summary_enabled(self) -> bool:
+        """Whether the selected profile permits cloud summarization."""
+        return self.MODEL_PROFILE == "workbench" and bool(self.GEMINI_API_KEY)
 
 
 settings = Settings()

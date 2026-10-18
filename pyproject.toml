@@ -2,6 +2,8 @@
 name = "egemma"
 version = "0.4.5"
 requires-python = ">=3.13"
+license = "MIT AND Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*"]
 
 [tool.pytest.ini_options]
 addopts = "--cov=src --cov-report=term-missing --cov-fail-under=80 --import-mode=importlib"

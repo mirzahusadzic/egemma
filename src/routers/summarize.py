@@ -83,7 +83,7 @@ async def summarize(
 
     # Check if requesting local model when it's disabled
     if model_name is None or not model_name.startswith("gemini"):
-        if not settings.SUMMARY_LOCAL_ENABLED:
+        if not settings.local_summary_enabled:
             raise HTTPException(
                 status_code=400,
                 detail=(

@@ -1,7 +1,7 @@
 {
   "name": "egemma",
   "version": "1.0.0",
-  "description": "<div align=\"center\"> <img src=\"./docs/assets/egemma-logo.png\" alt=\"eGemma Logo\" width=\"400\"/>",
+  "description": "OpenAI Agents SDK examples for the local eGemma server",
   "main": "index.js",
   "directories": {
     "doc": "docs",
@@ -12,11 +12,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git@github.com-egemma:mirzahusadzic/egemma.git"
+    "url": "https://github.com/mirzahusadzic/egemma.git"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@openai/agents": "^0.3.4",
