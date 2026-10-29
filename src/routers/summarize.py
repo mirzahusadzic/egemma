@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from ..config import settings
 from ..models.summarization import SummarizationModelWrapper, SummaryInputTooLong
-from ..util import condense_log, is_likely_binary
+from ..util import condense_log, is_likely_binary, read_upload
 from ..util.rate_limiter import get_in_memory_rate_limiter
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,7 @@ router = APIRouter(tags=["Summarization"])
 )
 async def summarize(
     request: Request,  # Add request object to access headers
-    file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
+    file: Annotated[UploadFile, File(...)],
     max_tokens: int | None = Form(
         default=None, ge=1, description="Maximum number of tokens for the summary."
     ),
@@ -72,7 +72,7 @@ async def summarize(
             ),
         )
     try:
-        code_bytes = await file.read()
+        code_bytes = await read_upload(file)
         if is_likely_binary(code_bytes):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

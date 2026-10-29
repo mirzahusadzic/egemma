@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..models.embedding import SentenceTransformerWrapper
-from ..util import is_likely_binary
+from ..util import is_likely_binary, read_upload
 from ..util.rate_limiter import get_in_memory_rate_limiter
 
 logging.basicConfig(level=logging.INFO)
@@ -181,7 +181,7 @@ async def embed_texts(request: TextEmbeddingBatchRequest):
     ],
 )
 async def embed(
-    file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
+    file: Annotated[UploadFile, File(...)],
     dimensions: List[EmbeddingDimensions] | None = DEFAULT_DIMENSIONS_QUERY,
     prompt_name: PromptNames | None = DEFAULT_PROMPT_NAME_QUERY,
     title: str | None = Query(
@@ -191,7 +191,7 @@ async def embed(
     if dimensions is None:
         dimensions = [EmbeddingDimensions.DIM_128]
     try:
-        file_content_bytes = await file.read()
+        file_content_bytes = await read_upload(file)
         if is_likely_binary(file_content_bytes):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -213,6 +213,8 @@ async def embed(
                 result[f"embedding_{dim_value}d"] = embedding[:dim_value].tolist()
 
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error during embedding: {e}", exc_info=True)
         raise HTTPException(

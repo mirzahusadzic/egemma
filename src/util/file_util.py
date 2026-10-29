@@ -1,4 +1,18 @@
+from fastapi import HTTPException, UploadFile, status
+
 from ..config import settings
+
+
+async def read_upload(file: UploadFile) -> bytes:
+    """The uploaded bytes, refused with 413 past MAX_FILE_SIZE_BYTES."""
+    limit = settings.MAX_FILE_SIZE_BYTES
+    data = await file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"The file exceeds the {limit:,}-byte limit.",
+        )
+    return data
 
 
 def is_likely_binary(

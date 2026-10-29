@@ -2,6 +2,8 @@ import logging
 
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 
+from ..util import read_upload
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,13 @@ async def parse_ast(
             ),
         )
 
-    content = await file.read()
-    code = content.decode("utf-8")
+    content = await read_upload(file)
+    try:
+        code = content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="The file is not UTF-8 text."
+        ) from exc
 
     from ..util.ast_parser import parse_code_to_ast
 

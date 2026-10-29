@@ -620,3 +620,42 @@ def test_embed_tokens_needs_a_key(client):
         "/embed/tokens", json={"items": [{"text": "a text", "spans": [[0, 1]]}]}
     )
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("path", "data"),
+    [("/summarize", {}), ("/embed", {}), ("/parse-ast", {"language": "python"})],
+)
+def test_uploads_past_the_size_limit_are_refused(
+    client, mock_api_key_dependency, monkeypatch, path, data
+):
+    monkeypatch.setattr(settings, "MAX_FILE_SIZE_BYTES", 16)
+    response = client.post(
+        path,
+        files={"file": ("big.py", b"x = 1\n" * 4)},
+        data=data,
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 413, response.text
+    assert "16-byte limit" in response.json()["detail"]
+
+
+def test_embed_binary_upload_is_a_client_error(client, mock_api_key_dependency):
+    response = client.post(
+        "/embed",
+        files={"file": ("blob.bin", b"\x00\x01\x02" * 100)},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 400
+    assert "binary" in response.json()["detail"]
+
+
+def test_parse_ast_rejects_text_that_is_not_utf8(client, mock_api_key_dependency):
+    response = client.post(
+        "/parse-ast",
+        files={"file": ("a.py", b"\xff\xfe")},
+        data={"language": "python"},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 400
+    assert "UTF-8" in response.json()["detail"]
