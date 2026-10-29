@@ -69,16 +69,22 @@ class SentenceTransformerWrapper:
         if self.model is None:
             raise RuntimeError("Model not loaded")
 
-        # A list of document-style prompts that benefit from having a title
-        prompts_with_title_support = ["document", "Retrieval-document"]
-
-        if prompt_name in prompts_with_title_support and title:
-            # Format the text with the title for prompts that support it
-            formatted_text = f"title: {title} | text: {text}"
+        # EmbeddingGemma's document prompts read "title: none | text: "; a known title
+        # takes the place of "none" (it must not add a second header after it).
+        if prompt_name in ("document", "Retrieval-document") and title:
+            prompt = f"title: {title} | text: "
         else:
-            formatted_text = text
+            prompt = self.model.prompts[prompt_name] if prompt_name else ""
 
-        return self.model.encode(formatted_text, prompt_name=prompt_name)
+        # The encoder would cut a longer text silently and embed only its start.
+        count = len(self.model.tokenizer(prompt + text)["input_ids"])
+        window = self.model.max_seq_length
+        if count > window:
+            raise TextTooLong(
+                f"The text needs {count} tokens with its prompt; the model reads "
+                f"{window}. Split it."
+            )
+        return self.model.encode(text, prompt=prompt)
 
     def encode_many(self, texts: list[str], prompt_name: str | None = None):
         if self.model is None:

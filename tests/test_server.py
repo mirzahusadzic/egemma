@@ -709,3 +709,49 @@ def test_the_file_embedding_cache_keeps_digests_not_files(
     keys = embed_router.encode_cache.keys()
     assert len(keys) == 2
     assert all(len(key) == 64 and "x" not in key for key in keys)
+
+
+def test_embed_file_past_the_window(client, mock_api_key_dependency):
+    import src.routers.embed as embed_router
+    from src.models.embedding import TextTooLong
+
+    embed_router.encode_cache.clear()
+    with patch.object(
+        embed_router.embedding_model_wrapper,
+        "encode",
+        side_effect=TextTooLong("The text needs 4100 tokens with its prompt"),
+    ):
+        response = client.post(
+            "/embed",
+            files={"file": ("long.txt", b"long text")},
+            headers={"Authorization": "Bearer test_api_key"},
+        )
+    assert response.status_code == 422
+    assert "4100 tokens" in response.json()["detail"]
+
+
+def test_embed_file_names_its_model(client, mock_api_key_dependency):
+    response = client.post(
+        "/embed?dimensions=128",
+        files={"file": ("a.txt", b"a text to embed")},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model"] == settings.EMBEDDING_MODEL_NAME
+    assert body["revision"] == settings.EMBEDDING_MODEL_REVISION
+    assert len(body["embedding_128d"]) == 128
+
+
+def test_embed_file_without_a_model_is_unavailable(
+    client, mock_api_key_dependency, monkeypatch
+):
+    import src.routers.embed as embed_router
+
+    monkeypatch.setattr(embed_router, "embedding_model_wrapper", None)
+    response = client.post(
+        "/embed",
+        files={"file": ("a.txt", b"text")},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 503

@@ -198,6 +198,11 @@ async def embed(
         None, description="Optional title for the embedded content."
     ),
 ):
+    if embedding_model_wrapper is None or embedding_model_wrapper.model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding model not loaded.",
+        )
     if dimensions is None:
         dimensions = [EmbeddingDimensions.DIM_128]
     try:
@@ -213,10 +218,13 @@ async def embed(
             cached_encode, file_content, prompt_name, title
         )
 
+        result = {
+            "model": settings.EMBEDDING_MODEL_NAME,
+            "revision": settings.EMBEDDING_MODEL_REVISION,
+        }
         if not dimensions:
-            return {"embedding": embedding.tolist()}
+            return {**result, "embedding": embedding.tolist()}
 
-        result = {}
         for dim in dimensions:
             dim_value = dim.value
             if dim_value in [128, 256, 512, 768]:
@@ -225,6 +233,10 @@ async def embed(
         return result
     except HTTPException:
         raise
+    except TextTooLong as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except Exception as e:
         logger.error(f"Error during embedding: {e}", exc_info=True)
         raise HTTPException(
