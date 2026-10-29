@@ -84,3 +84,26 @@ def test_streams_progress_then_the_result():
     assert events[1][1]["step"] == 50 and events[-1][1]["model"]["steps"] == 50
     one = TestClient(app).post("/corpus/gpt", json={**body, "stream": False}).json()
     assert set(one["wte"]) == {"keeper-01", "key"}
+
+
+@pytest.mark.parametrize(
+    ("sentences", "detail"),
+    [
+        ([["w"] * (corpus.MAX_SENTENCE_WORDS + 1)], "at most 256 items"),
+        (
+            [
+                [f"w{k}" for k in range(start, start + 250)]
+                for start in range(0, corpus.MAX_VOCABULARY + 1, 250)
+            ],
+            "distinct words",
+        ),
+    ],
+    ids=["sentence too long", "vocabulary too large"],
+)
+def test_corpus_bounds_are_refused(sentences, detail):
+    app = FastAPI()
+    app.include_router(corpus.router)
+    body = {"sentences": sentences, "stream": False}
+    response = TestClient(app).post("/corpus/gpt", json=body)
+    assert response.status_code == 422
+    assert detail in json.dumps(response.json())

@@ -15,20 +15,28 @@ import asyncio
 import json
 import logging
 import threading
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..models.corpus_gpt import Cancelled, train_corpus_gpt
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/corpus", tags=["Corpus"])
 
+# Each step's logits are 32 sentences x the longest sentence x the vocabulary, so
+# these two bound the memory one training can take (under 1 GB of logits).
+MAX_SENTENCE_WORDS = 256
+MAX_VOCABULARY = 20_000
+
 
 class CorpusGPTRequest(BaseModel):
-    sentences: list[list[str]] = Field(min_length=1, max_length=20000)
+    sentences: list[Annotated[list[str], Field(max_length=MAX_SENTENCE_WORDS)]] = Field(
+        min_length=1, max_length=20000
+    )
     words: dict[str, str] = Field(default_factory=dict)
     positions: dict[str, list[tuple[int, int]]] = Field(default_factory=dict)
     steps: int = Field(1500, ge=1, le=20000)
@@ -38,6 +46,16 @@ class CorpusGPTRequest(BaseModel):
     heads: int = Field(4, ge=1, le=16)
     threads: int = Field(2, ge=1, le=8)
     stream: bool = True
+
+    @model_validator(mode="after")
+    def _vocabulary_is_bounded(self):
+        vocabulary = len({word for words in self.sentences for word in words})
+        if vocabulary > MAX_VOCABULARY:
+            raise ValueError(
+                f"The sentences use {vocabulary} distinct words; "
+                f"at most {MAX_VOCABULARY} are learned in one request."
+            )
+        return self
 
 
 def _event(name: str, data) -> str:
