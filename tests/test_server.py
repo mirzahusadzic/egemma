@@ -755,3 +755,45 @@ def test_embed_file_without_a_model_is_unavailable(
         headers={"Authorization": "Bearer test_api_key"},
     )
     assert response.status_code == 503
+
+
+def test_embed_tokens_can_return_base64_float32(client, mock_api_key_dependency):
+    import base64
+
+    import src.routers.embed as embed_router
+
+    vector = np.array([0.5, -1.25, 3.0], dtype=np.float32)
+    with patch.object(
+        embed_router.embedding_model_wrapper,
+        "token_states",
+        return_value=[[vector, None]],
+    ):
+        response = client.post(
+            "/embed/tokens",
+            json={
+                "items": [{"text": "a text", "spans": [[0, 1], [2, 6]]}],
+                "encoding": "base64",
+            },
+            headers={"Authorization": "Bearer test_api_key"},
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["encoding"] == "base64" and body["dimensions"] == 3
+    encoded, missing = body["items"][0]["vectors"]
+    assert missing is None
+    decoded = np.frombuffer(base64.b64decode(encoded), dtype="<f4")
+    assert np.array_equal(decoded, vector)
+
+
+def test_embed_tokens_bounds_the_vectors_of_one_request(
+    client, mock_api_key_dependency, monkeypatch
+):
+    monkeypatch.setattr(settings, "EMBED_TOKENS_MAX_VECTORS", 100)
+    items = [{"text": "a text", "spans": [[0, 1]] * 64}] * 2
+    response = client.post(
+        "/embed/tokens",
+        json={"items": items},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 422
+    assert "asks for 128 vectors; at most 100" in response.text

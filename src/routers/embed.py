@@ -1,11 +1,13 @@
+import base64
 import logging
 import math
 from enum import Enum
-from typing import Annotated, List
+from typing import Annotated, List, Literal
 
+import numpy as np
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..config import settings
 from ..models.embedding import SentenceTransformerWrapper, TextTooLong
@@ -68,10 +70,23 @@ class TokenStatesRequest(BaseModel):
         min_length=1,
         max_length=settings.EMBEDDING_BATCH_MAX_INPUTS,
     )
+    # "base64": each vector as little-endian float32 bytes, about a quarter of the
+    # size of the same vector in JSON numbers.
+    encoding: Literal["json", "base64"] = "json"
+
+    @model_validator(mode="after")
+    def _vectors_are_bounded(self):
+        vectors = sum(len(item.spans) for item in self.items)
+        if vectors > settings.EMBED_TOKENS_MAX_VECTORS:
+            raise ValueError(
+                f"The request asks for {vectors} vectors; at most "
+                f"{settings.EMBED_TOKENS_MAX_VECTORS} are returned at once."
+            )
+        return self
 
 
 class TokenStatesItem(BaseModel):
-    vectors: list[list[float] | None]
+    vectors: list[list[float] | str | None]
 
 
 class TokenStatesResponse(BaseModel):
@@ -79,6 +94,7 @@ class TokenStatesResponse(BaseModel):
     revision: str
     layer: str
     dimensions: int
+    encoding: Literal["json", "base64"]
     items: list[TokenStatesItem]
 
 
@@ -295,17 +311,21 @@ async def embed_tokens(request: TokenStatesRequest):
                 if vector is None:
                     vectors.append(None)
                     continue
-                values = vector.tolist()
-                if any(not math.isfinite(v) for v in values):
+                if not np.isfinite(vector).all():
                     raise RuntimeError("Token state has invalid coordinates")
-                width = width or len(values)
-                vectors.append(values)
+                width = width or len(vector)
+                if request.encoding == "base64":
+                    raw = np.asarray(vector, dtype="<f4").tobytes()
+                    vectors.append(base64.b64encode(raw).decode("ascii"))
+                else:
+                    vectors.append(vector.tolist())
             items.append(TokenStatesItem(vectors=vectors))
         return TokenStatesResponse(
             model=settings.EMBEDDING_MODEL_NAME,
             revision=settings.EMBEDDING_MODEL_REVISION,
             layer="last",
             dimensions=width or 0,
+            encoding=request.encoding,
             items=items,
         )
     except TextTooLong as exc:

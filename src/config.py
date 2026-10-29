@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_REVISION: str = "57c266a740f537b4dc058e1b0cda161fd15afa75"
     EMBEDDING_BATCH_MAX_INPUTS: int = 256
     EMBEDDING_MAX_INPUT_CHARS: int = 16_384
+    # Vectors one /embed/tokens request may ask for (768 floats each).
+    EMBED_TOKENS_MAX_VECTORS: int = 8192
     AMRBART_MODEL_ENABLED: bool = True
     AMRBART_MODEL_NAME: str = "xfbai/AMRBART-large-finetuned-AMR3.0-AMRParsing-v2"
     AMRBART_MODEL_REVISION: str = "12f7e78e3dfa6f37ddbbf77c4c152b4fc39bc512"
