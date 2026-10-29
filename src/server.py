@@ -17,6 +17,7 @@ from .models.summarization import SummarizationModelWrapper
 
 # Import routers
 from .routers import amr, ast_parser, corpus, embed, summarize
+from .util.body_limit import BodyLimit
 
 # Configure logging with explicit format to ensure visibility
 logging.basicConfig(
@@ -109,6 +110,8 @@ app = fastapi.FastAPI(
     docs_url=None,
     lifespan=lifespan,
 )
+# Before anything reads the body: parsing and authentication come after it.
+app.add_middleware(BodyLimit)
 
 
 @app.exception_handler(SyntaxError)

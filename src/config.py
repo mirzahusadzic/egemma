@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     SUMMARY_TEMP: float = 0.7
     SUMMARY_N_CTX: int = 32768
     MAX_FILE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
+    # A JSON request body; uploads are limited by MAX_FILE_SIZE_BYTES instead.
+    MAX_REQUEST_BYTES: int = 16 * 1024 * 1024
     BINARY_DETECTION_THRESHOLD: float = 0.1
     CACHE_MAX_SIZE: int = 128
     EMBED_RATE_LIMIT_SECONDS: int = 10
