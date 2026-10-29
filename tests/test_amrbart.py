@@ -116,9 +116,9 @@ def test_incomplete_or_trailing_graphs_are_retained_as_invalid(parser, graph):
 
 def test_valid_unknowns_forward_references_and_literal_syntax_are_preserved():
     raw = (
-        '<AMR> (<pointer:0> ask-01 :ARG1 <pointer:1> '
-        ':ARG2 (<pointer:1> amr-unknown) :polarity - :quant 2 '
-        ':value <lit>(<pointer:9> thing :ARG0 x)</lit> '
+        "<AMR> (<pointer:0> ask-01 :ARG1 <pointer:1> "
+        ":ARG2 (<pointer:1> amr-unknown) :polarity - :quant 2 "
+        ":value <lit>(<pointer:9> thing :ARG0 x)</lit> "
         ':comment "<lit> is a marker") </AMR>'
     )
     graph = penman.decode(pointer_graph_to_penman(raw), model=amr_model)
@@ -138,11 +138,12 @@ def test_invalid_fragment_scanner_does_not_interpret_literal_contents(ending):
     fragments = scan_invalid_amr_fragments(raw)
 
     assert [(f.source, f.relation) for f in fragments] == [
-        ("z0", ":instance"), ("z0", ":value")
+        ("z0", ":instance"),
+        ("z0", ":value"),
     ]
     assert fragments[1].target == literal
     assert fragments[1].complete == bool(ending)
-    assert raw[fragments[1].token_start:fragments[1].token_end].startswith(":value")
+    assert raw[fragments[1].token_start : fragments[1].token_end].startswith(":value")
 
 
 @pytest.mark.parametrize("text_tokens", [397, 398])
@@ -207,21 +208,23 @@ def test_pointer_graph_decoder_preserves_reentrancy():
 
 
 def test_pointer_graph_decoder_joins_split_roles_without_changing_literals():
-    raw = ('<AMR> (<pointer:0> and : op6 (<pointer:1> person '
-           ': prep-as (<pointer:2> artist)) : op7 <pointer:1> '
-           ':value <lit>: op6 and : prep-as</lit>) </AMR>')
+    raw = (
+        "<AMR> (<pointer:0> and : op6 (<pointer:1> person "
+        ": prep-as (<pointer:2> artist)) : op7 <pointer:1> "
+        ":value <lit>: op6 and : prep-as</lit>) </AMR>"
+    )
     graph = penman.decode(pointer_graph_to_penman(raw))
     assert ("z0", ":op6", "z1") in graph.triples
     assert ("z0", ":op7", "z1") in graph.triples
     assert ("z1", ":prep-as", "z2") in graph.triples
-    assert ("z0", ":value", '\": op6 and : prep-as\"') in graph.triples
-    assert ': op6' in raw
+    assert ("z0", ":value", '": op6 and : prep-as"') in graph.triples
+    assert ": op6" in raw
 
 
 def test_split_role_normalization_does_not_supply_missing_concepts():
     with pytest.raises(AMRDecodeError, match="no concept"):
         pointer_graph_to_penman(
-            '<AMR> (<pointer:0> and : op6 (<pointer:1> :ARG0 x)) </AMR>'
+            "<AMR> (<pointer:0> and : op6 (<pointer:1> :ARG0 x)) </AMR>"
         )
 
 

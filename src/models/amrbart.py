@@ -175,6 +175,7 @@ def pointer_graph_to_penman(linearized: str) -> str:
     lowered: list[str] = []
     declarations: set[str] = set()
     references: set[str] = set()
+
     def node(index: int) -> int:
         if index >= len(tokens) or tokens[index] != "(":
             raise AMRDecodeError("expected a pointer graph node")
