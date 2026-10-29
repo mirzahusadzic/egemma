@@ -1,7 +1,6 @@
 import logging
 import math
 from enum import Enum
-from functools import lru_cache
 from typing import Annotated, List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -11,6 +10,7 @@ from pydantic import BaseModel, Field
 from ..config import settings
 from ..models.embedding import SentenceTransformerWrapper, TextTooLong
 from ..util import is_likely_binary, read_upload
+from ..util.content_cache import ContentCache
 from ..util.rate_limiter import get_in_memory_rate_limiter
 
 logging.basicConfig(level=logging.INFO)
@@ -86,9 +86,19 @@ class TokenStatesResponse(BaseModel):
 embedding_model_wrapper: SentenceTransformerWrapper | None = None
 
 
-@lru_cache(maxsize=settings.CACHE_MAX_SIZE)
+# File embeddings by a hash of the file, prompt and title; the file is not kept.
+encode_cache = ContentCache(settings.CACHE_MAX_SIZE)
+
+
 def cached_encode(text: str, prompt_name: str | None = None, title: str | None = None):
-    return embedding_model_wrapper.encode(text, prompt_name=prompt_name, title=title)
+    key = ContentCache.key(text, prompt_name, title)
+    vector = encode_cache.get(key)
+    if vector is None:
+        vector = embedding_model_wrapper.encode(
+            text, prompt_name=prompt_name, title=title
+        )
+        encode_cache.put(key, vector)
+    return vector
 
 
 DEFAULT_DIMENSIONS_QUERY = Query(

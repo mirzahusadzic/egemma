@@ -118,3 +118,55 @@ def test_concurrent_summaries_run_one_at_a_time():
 
     assert wrapper.model.create_chat_completion.call_count == 4
     assert most == 1
+
+
+def test_an_edited_persona_takes_effect(tmp_path, monkeypatch):
+    (tmp_path / "personas" / "code").mkdir(parents=True)
+    persona = tmp_path / "personas" / "code" / "developer.md"
+    monkeypatch.chdir(tmp_path)
+    wrapper = _loaded()
+
+    persona.write_text("First persona for {language}")
+    wrapper.summarize("x = 1", language="Python")
+    persona.write_text("Second persona for {language}")
+    wrapper.summarize("x = 1", language="Python")
+
+    prompts = [
+        call.kwargs["messages"][0]["content"]
+        for call in wrapper.model.create_chat_completion.call_args_list
+    ]
+    assert prompts == ["First persona for Python", "Second persona for Python"]
+
+
+def test_identical_concurrent_requests_make_one_summary():
+    wrapper = _loaded()
+
+    def completion(**kwargs):
+        time.sleep(0.05)
+        return {"choices": [{"message": {"content": "s"}, "finish_reason": "stop"}]}
+
+    wrapper.model.create_chat_completion.side_effect = completion
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(wrapper.summarize("same", language="Go"))
+        )
+        for _ in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert wrapper.model.create_chat_completion.call_count == 1
+    assert results == [Summary("s", truncated=False)] * 3
+
+
+def test_the_summary_cache_keeps_digests_not_files(monkeypatch):
+    wrapper = _loaded()
+    monkeypatch.setattr(wrapper.cache, "maxsize", 2)
+    for k in range(3):
+        wrapper.summarize(f"file {k} " + "x" * 10_000, language="Python")
+    keys = wrapper.cache.keys()
+    assert len(keys) == 2
+    assert all(len(key) == 64 and "x" not in key for key in keys)

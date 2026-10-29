@@ -2,13 +2,13 @@ import logging
 import os
 import re
 import threading
-from functools import lru_cache
 from typing import NamedTuple
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
 from ..config import settings
+from ..util.content_cache import ContentCache
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,8 @@ class SummarizationModelWrapper:
         self.model: Llama | None = None
         # One llama.cpp context: concurrent calls would share and corrupt it.
         self._inference_lock = threading.Lock()
+        # Summaries by a hash of the prompt that produced them, persona text included.
+        self.cache = ContentCache(settings.CACHE_MAX_SIZE)
 
     def load_model(self):
         """Load the local Gemma model for summarization."""
@@ -98,19 +100,6 @@ class SummarizationModelWrapper:
     ) -> Summary:
         if self.model is None:
             raise RuntimeError("Summarization model not loaded")
-        return self._summarize(content, language, persona_name, max_tokens, temperature)
-
-    @lru_cache(maxsize=128)  # noqa: B019
-    def _summarize(
-        self,
-        content: str,
-        language: str,
-        persona_name: str,
-        max_tokens: int | None,
-        temperature: float | None,
-    ) -> Summary:
-        if self.model is None:
-            raise RuntimeError("Model not loaded")
 
         final_max_tokens = (
             max_tokens if max_tokens is not None else settings.SUMMARY_MAX_TOKEN
@@ -119,6 +108,7 @@ class SummarizationModelWrapper:
             temperature if temperature is not None else settings.SUMMARY_TEMP
         )
 
+        # Read on every call, so an edited persona takes effect at once.
         persona_type = "docs" if language.lower() == "markdown" else "code"
         system_msg = _get_persona_system_message(
             persona_name, persona_type, final_max_tokens, language
@@ -131,8 +121,16 @@ class SummarizationModelWrapper:
                 "content": f"Here is the {language} content:\n\n{content}",
             },
         ]
+        key = ContentCache.key(messages, final_max_tokens, final_temperature)
+        cached = self.cache.get(key)
+        if cached is not None:
+            return cached
 
         with self._inference_lock:
+            # An identical request may have been answered while this one waited.
+            cached = self.cache.get(key)
+            if cached is not None:
+                return cached
             prompt_tokens = _TEMPLATE_TOKENS + sum(
                 len(self.model.tokenize(m["content"].encode("utf-8"), add_bos=False))
                 for m in messages
@@ -149,8 +147,9 @@ class SummarizationModelWrapper:
                 temperature=final_temperature,
                 max_tokens=final_max_tokens,
             )
-
-        choice = response["choices"][0]
-        return Summary(
-            choice["message"]["content"], choice.get("finish_reason") == "length"
-        )
+            choice = response["choices"][0]
+            summary = Summary(
+                choice["message"]["content"], choice.get("finish_reason") == "length"
+            )
+            self.cache.put(key, summary)
+        return summary

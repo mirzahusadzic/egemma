@@ -257,9 +257,9 @@ def test_encoder_cache_hit(client, mock_api_key_dependency, tmp_path):
         )  # Mock the return value
 
         # Clear the cache before the test to ensure a clean state
-        from src.routers.embed import PromptNames, cached_encode
+        from src.routers.embed import PromptNames, encode_cache
 
-        cached_encode.cache_clear()
+        encode_cache.clear()
 
         # First call
         with open(tmp_path / "test.txt", "rb") as f:
@@ -305,9 +305,9 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency, tmp_path)
     text_to_embed = "test text"
     (tmp_path / "test.txt").write_text(text_to_embed)
 
-    from src.routers.embed import cached_encode
+    from src.routers.embed import encode_cache
 
-    cached_encode.cache_clear()
+    encode_cache.clear()
 
     # Patch the encode function in the router's cached_encode
     import src.routers.embed as embed_router
@@ -420,7 +420,7 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
     # Clear the cache on the method before the test
     from src.routers.summarize import summarization_model_wrapper
 
-    summarization_model_wrapper._summarize.cache_clear()
+    summarization_model_wrapper.cache.clear()
 
     # First call
     with open(tmp_path / "test.py", "rb") as f:
@@ -690,3 +690,22 @@ def test_the_bearer_key_is_checked(client, key, status_code):
         headers={"Authorization": f"Bearer {key}".encode("latin-1")},
     )
     assert response.status_code == status_code, response.text
+
+
+def test_the_file_embedding_cache_keeps_digests_not_files(
+    client, mock_api_key_dependency, monkeypatch
+):
+    import src.routers.embed as embed_router
+
+    monkeypatch.setattr(embed_router.encode_cache, "maxsize", 2)
+    embed_router.encode_cache.clear()
+    headers = {"Authorization": "Bearer test_api_key"}
+    for k in range(3):
+        text = f"file {k} " + "x" * 10_000
+        response = client.post(
+            "/embed", files={"file": (f"f{k}.txt", text.encode())}, headers=headers
+        )
+        assert response.status_code == 200
+    keys = embed_router.encode_cache.keys()
+    assert len(keys) == 2
+    assert all(len(key) == 64 and "x" not in key for key in keys)
