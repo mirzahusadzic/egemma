@@ -1,4 +1,6 @@
+import bisect
 import logging
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import torch
@@ -28,7 +30,25 @@ def _get_optimal_device() -> str:
 
 def span_means(offsets, states, spans):
     """The mean state of the tokens each character span overlaps (a token with
-    an empty offset, a special token, never counts); None where none does."""
+    an empty offset, a special token, never counts); None where none does.
+
+    Tokens come in text order, so those a span overlaps are one run, found by two
+    binary searches: the work is one pass over the tokens, not one per span."""
+    real = [k for k, (x, y) in enumerate(offsets) if y > x]
+    starts = [offsets[k][0] for k in real]
+    ends = [offsets[k][1] for k in real]
+    if any(a > b for a, b in pairwise(starts)) or any(a > b for a, b in pairwise(ends)):
+        return _scanned_span_means(offsets, states, spans)  # not in text order
+    means = []
+    for start, end in spans:
+        # Overlap is x < end and y > start: tokens ending after the span starts
+        # are a suffix, and tokens starting before it ends are a prefix.
+        rows = real[bisect.bisect_right(ends, start) : bisect.bisect_left(starts, end)]
+        means.append(states[rows].mean(axis=0) if rows else None)
+    return means
+
+
+def _scanned_span_means(offsets, states, spans):
     means = []
     for start, end in spans:
         rows = [

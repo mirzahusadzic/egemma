@@ -1,10 +1,16 @@
+import random
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 import torch
 
-from src.models.embedding import SentenceTransformerWrapper, TextTooLong, span_means
+from src.models.embedding import (
+    SentenceTransformerWrapper,
+    TextTooLong,
+    _scanned_span_means,
+    span_means,
+)
 
 
 def test_span_means_averages_the_tokens_a_span_overlaps():
@@ -69,3 +75,51 @@ def test_a_title_replaces_none_in_the_document_prompt():
     wrapper.model.encode.assert_called_once_with(
         "the body", prompt="title: Pump spec | text: "
     )
+
+
+def _offsets(rng, n):
+    """Offsets as a tokenizer gives them: specials at (0, 0), runs of byte tokens
+    sharing one character's offsets, and gaps for spaces."""
+    offsets, at = [(0, 0)], 0
+    for _ in range(n):
+        at += rng.choice([0, 1])
+        width = rng.choice([1, 1, 2, 5])
+        for _ in range(rng.choice([1, 1, 1, 3])):
+            offsets.append((at, at + width))
+        at += width
+    return offsets + [(0, 0)]
+
+
+def test_span_means_agrees_with_a_scan_of_every_token():
+    rng = random.Random(7)
+    for _ in range(200):
+        offsets = _offsets(rng, rng.randint(1, 40))
+        states = np.array([[rng.random(), rng.random()] for _ in offsets])
+        end = offsets[-2][1] + 3
+        spans = [tuple(sorted(rng.sample(range(end + 1), 2))) for _ in range(10)]
+        for got, want in zip(
+            span_means(offsets, states, spans),
+            _scanned_span_means(offsets, states, spans),
+            strict=True,
+        ):
+            assert (got is None) == (want is None)
+            if got is not None:
+                assert np.array_equal(got, want)
+
+
+class _CountedOffsets(list):
+    reads = 0
+
+    def __iter__(self):
+        for item in super().__iter__():
+            type(self).reads += 1
+            yield item
+
+
+def test_span_means_reads_the_tokens_once_not_once_per_span():
+    offsets = _CountedOffsets([(0, 0)] + [(k, k + 1) for k in range(2048)] + [(0, 0)])
+    states = np.zeros((len(offsets), 4))
+    spans = [(k, k + 3) for k in range(0, 64 * 30, 30)]
+    _CountedOffsets.reads = 0
+    span_means(offsets, states, spans)
+    assert _CountedOffsets.reads <= len(offsets)  # the scan read 64 times as many
