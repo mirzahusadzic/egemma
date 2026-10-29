@@ -677,3 +677,16 @@ def test_embed_tokens_refuses_a_text_past_the_window(client, mock_api_key_depend
         )
     assert response.status_code == 422
     assert "2049 tokens" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("key", "status_code"), [("test-key", 200), ("wrong", 401), ("tést-kéy", 401)]
+)
+def test_the_bearer_key_is_checked(client, key, status_code):
+    response = client.post(
+        "/parse-ast",
+        files={"file": ("a.py", b"x = 1\n")},
+        data={"language": "python"},
+        headers={"Authorization": f"Bearer {key}".encode("latin-1")},
+    )
+    assert response.status_code == status_code, response.text

@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -47,7 +48,9 @@ async def get_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server configuration error: API key not set.",
         )
-    if credentials.credentials != settings.WORKBENCH_API_KEY:
+    if not secrets.compare_digest(
+        credentials.credentials.encode(), settings.WORKBENCH_API_KEY.encode()
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
