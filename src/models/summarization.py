@@ -83,6 +83,8 @@ class SummarizationModelWrapper:
             # Gemma's sliding-window layers only attend to their window; without
             # this llama.cpp sizes their cache to the full context.
             swa_full=False,
+            # Otherwise llama.cpp prints the GGUF metadata and chat template on load.
+            verbose=False,
         )
         logger.info(f"Summarization model loaded: {settings.SUMMARY_MODEL_NAME}")
 

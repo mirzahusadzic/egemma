@@ -50,6 +50,7 @@ def test_load_model_uses_the_pinned_checkpoint():
     assert kwargs["model_path"] == "/m.gguf"
     assert kwargs["n_ctx"] == settings.SUMMARY_N_CTX
     assert kwargs["swa_full"] is False
+    assert kwargs["verbose"] is False
     assert wrapper.model is mock_llama.return_value
 
 
