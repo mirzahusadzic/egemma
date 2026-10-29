@@ -77,8 +77,8 @@ async def parse_amr(request: AMRParseRequest) -> AMRParseResult:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "AMRBART model not loaded. Set MODEL_PROFILE=semantic or "
-                "AMRBART_MODEL_ENABLED=true in .env and restart the server."
+                "AMRBART model not loaded. Set AMRBART_MODEL_ENABLED=true "
+                "in .env and restart the server."
             ),
         )
 
@@ -112,8 +112,8 @@ async def parse_amr_batch(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "AMRBART model not loaded. Set MODEL_PROFILE=semantic or "
-                "AMRBART_MODEL_ENABLED=true in .env and restart the server."
+                "AMRBART model not loaded. Set AMRBART_MODEL_ENABLED=true "
+                "in .env and restart the server."
             ),
         )
     if any(

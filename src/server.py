@@ -9,16 +9,13 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from .api.openai.compat import ModelInfo, ModelsResponse
-from .api.openai.conversations import ConversationManager
-from .config import get_conversations_dir, settings
+from .config import settings
 from .models.amrbart import AMRBartModelWrapper
 from .models.embedding import SentenceTransformerWrapper
-from .models.llm import ChatModelWrapper
 from .models.summarization import SummarizationModelWrapper
 
 # Import routers
-from .routers import amr, ast_parser, conversations, corpus, embed, responses, summarize
+from .routers import amr, ast_parser, corpus, embed, summarize
 
 # Configure logging with explicit format to ensure visibility
 logging.basicConfig(
@@ -28,9 +25,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Ensure our module loggers are set to DEBUG
-logging.getLogger("src.models.llm").setLevel(logging.INFO)
-logging.getLogger("src.streaming.handler").setLevel(logging.INFO)
 # PENMAN logs every decoded graph at INFO; keep model payloads in API responses,
 # not in the server console.
 logging.getLogger("penman").setLevel(logging.WARNING)
@@ -81,50 +75,22 @@ async def lifespan(app: fastapi.FastAPI):
             f"Persona directory not found at '{persona_dir}'. Please create it."
         )
 
-    logger.info("Loading eGemma model profile: %s", settings.MODEL_PROFILE)
-
-    # Embeddings are shared by both the workbench and semantic profiles.
     embed.embedding_model_wrapper = SentenceTransformerWrapper()
     embed.embedding_model_wrapper.load_model()
 
-    # Load the AMR parser only when explicitly selected or enabled.
-    if settings.amrbart_enabled:
+    if settings.AMRBART_MODEL_ENABLED:
         amr_wrapper = AMRBartModelWrapper()
         amr_wrapper.load_model()
         amr.amrbart_model_wrapper = amr_wrapper
     else:
         amr.amrbart_model_wrapper = None
 
-    # Load summarization model
-    # Always initialize summarization wrapper (for Gemini API support)
-    # but only load local model if SUMMARY_LOCAL_ENABLED is True
-    summarization_wrapper = SummarizationModelWrapper()
-    if settings.local_summary_enabled:
-        summarization_wrapper.load_local_model()
-    # Always try to initialize Gemini client if API key is present
-    if settings.gemini_summary_enabled:
-        summarization_wrapper.load_gemini_client()
-    summarize.summarization_model_wrapper = summarization_wrapper
-
-    # Load chat model (GPT-OSS-20B) if enabled
-    if settings.chat_enabled:
-        chat_wrapper = ChatModelWrapper()
-        chat_wrapper.load_model()
-        responses.chat_model_wrapper = chat_wrapper
+    if settings.SUMMARY_MODEL_ENABLED:
+        summarization_wrapper = SummarizationModelWrapper()
+        summarization_wrapper.load_model()
+        summarize.summarization_model_wrapper = summarization_wrapper
     else:
-        responses.chat_model_wrapper = None
-
-    # Conversation state belongs to the workbench surface, not the semantic-only
-    # parser/embedding profile.
-    if settings.MODEL_PROFILE == "workbench":
-        conv_dir = get_conversations_dir(settings.CHAT_MODEL_NAME)
-        conv_manager = ConversationManager(conversations_dir=conv_dir)
-        conversations.conversation_manager = conv_manager
-        responses.conversation_manager = conv_manager
-        logger.info("Conversation manager initialized: %s", conv_dir)
-    else:
-        conversations.conversation_manager = None
-        responses.conversation_manager = None
+        summarize.summarization_model_wrapper = None
 
     yield
 
@@ -132,10 +98,9 @@ async def lifespan(app: fastapi.FastAPI):
 app = fastapi.FastAPI(
     title="Code Intelligence API (eGemma)",
     description=(
-        "Local AI workbench for embeddings, semantic parsing, summarization, and "
-        "OpenAI Agent SDK–compatible workflows. Supports Gemma models, AMRBART, "
-        "GPT-OSS tool-calling, hardware acceleration, caching, and rate limiting, "
-        "plus cloud-offloaded, persona-driven summarization through Gemini."
+        "Local inference for embeddings, semantic parsing, and persona-driven "
+        "summarization with EmbeddingGemma, AMRBART, and Gemma 4, with hardware "
+        "acceleration, caching, and rate limiting."
     ),
     version="0.4.0",
     docs_url=None,
@@ -170,14 +135,6 @@ async def rate_limits():
             "calls": settings.SUMMARIZE_RATE_LIMIT_CALLS,
             "seconds": settings.SUMMARIZE_RATE_LIMIT_SECONDS,
         },
-        "chat": {
-            "calls": settings.CHAT_RATE_LIMIT_CALLS,
-            "seconds": settings.CHAT_RATE_LIMIT_SECONDS,
-        },
-        "conversation": {
-            "calls": settings.CONVERSATION_RATE_LIMIT_CALLS,
-            "seconds": settings.CONVERSATION_RATE_LIMIT_SECONDS,
-        },
     }
 
 
@@ -187,7 +144,7 @@ async def health_check():
     Checks if the server and models are running.
     """
 
-    response = {"status": "ok", "model_profile": settings.MODEL_PROFILE}
+    response = {"status": "ok"}
 
     # Check embedding model
     embedding_status = {
@@ -202,11 +159,11 @@ async def health_check():
     }
     response["embedding_model"] = embedding_status
 
-    # Check local summarization model if enabled
-    if settings.local_summary_enabled:
-        summarization_status = {
+    if settings.SUMMARY_MODEL_ENABLED:
+        response["summarization_model"] = {
             "name": settings.SUMMARY_MODEL_NAME,
             "basename": settings.SUMMARY_MODEL_BASENAME,
+            "revision": settings.SUMMARY_MODEL_REVISION,
             "status": (
                 "loaded"
                 if summarize.summarization_model_wrapper
@@ -214,37 +171,10 @@ async def health_check():
                 else "not_loaded"
             ),
         }
-        response["local_summarization_model"] = summarization_status
     else:
-        response["local_summarization_model"] = {"status": "disabled"}
+        response["summarization_model"] = {"status": "disabled"}
 
-    # Check Gemini API status
-    gemini_status = {
-        "enabled": settings.gemini_summary_enabled,
-        "api_key_set": bool(settings.GEMINI_API_KEY),
-        "default_model": settings.GEMINI_DEFAULT_MODEL,
-    }
-    response["gemini_api"] = gemini_status
-
-    # Check chat model status (GPT-OSS-20B)
-    if settings.chat_enabled:
-        chat_status = {
-            "name": settings.CHAT_MODEL_NAME,
-            "path": settings.CHAT_MODEL_PATH,
-            "status": (
-                "loaded"
-                if responses.chat_model_wrapper
-                and responses.chat_model_wrapper.is_loaded
-                else "not_loaded"
-            ),
-            "context_length": settings.CHAT_N_CTX,
-            "supports_tools": True,
-        }
-        response["chat_model"] = chat_status
-    else:
-        response["chat_model"] = {"status": "disabled"}
-
-    if settings.amrbart_enabled:
+    if settings.AMRBART_MODEL_ENABLED:
         response["amrbart_model"] = {
             "name": settings.AMRBART_MODEL_NAME,
             "revision": settings.AMRBART_MODEL_REVISION,
@@ -278,42 +208,6 @@ app.get("/dark_theme.css", include_in_schema=False, name="dark_theme")(
 
 
 # =============================================================================
-# OpenAI-Compatible Models Endpoint
-# =============================================================================
-
-
-@app.get(
-    "/v1/models",
-    summary="List Models (OpenAI-compatible)",
-    description="List available models for chat completions.",
-    tags=["OpenAI API"],
-    response_model=ModelsResponse,
-    dependencies=[Depends(get_api_key)],
-)
-async def list_models():
-    """List available models."""
-    import time
-
-    models = []
-
-    # Add chat model if enabled
-    if (
-        settings.chat_enabled
-        and responses.chat_model_wrapper
-        and responses.chat_model_wrapper.is_loaded
-    ):
-        models.append(
-            ModelInfo(
-                id=settings.CHAT_MODEL_NAME,
-                created=int(time.time()),
-                owned_by="egemma",
-            )
-        )
-
-    return ModelsResponse(data=models)
-
-
-# =============================================================================
 # Include Routers
 # =============================================================================
 
@@ -331,12 +225,6 @@ app.include_router(summarize.router, dependencies=[Depends(get_api_key)])
 
 # AST parser router
 app.include_router(ast_parser.router, dependencies=[Depends(get_api_key)])
-
-# Conversations router (OpenAI API)
-app.include_router(conversations.router, dependencies=[Depends(get_api_key)])
-
-# Responses router (OpenAI Responses API)
-app.include_router(responses.router, dependencies=[Depends(get_api_key)])
 
 
 @app.get("/", tags=["Root"])

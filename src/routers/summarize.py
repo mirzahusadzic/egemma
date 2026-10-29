@@ -58,19 +58,6 @@ async def summarize(
             "(e.g., 'developer', 'assistant', 'security_validator')."
         ),
     ),
-    model_name: str | None = Form(
-        default=None,
-        description=(
-            "Name of the model to use for summarization (e.g., 'gemini-2.5-flash')."
-        ),
-    ),
-    enable_safety: bool | None = Form(
-        default=False,
-        description=(
-            "Enable Gemini safety settings for content filtering "
-            "(only applies to Gemini models)."
-        ),
-    ),
 ):
     logger.debug(
         f"Received /summarize request. "
@@ -78,19 +65,12 @@ async def summarize(
     )
     if summarization_model_wrapper is None:
         raise HTTPException(
-            status_code=500, detail="Summarization service not initialized."
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Summarization model not loaded. Set SUMMARY_MODEL_ENABLED=true "
+                "in .env and restart the server."
+            ),
         )
-
-    # Check if requesting local model when it's disabled
-    if model_name is None or not model_name.startswith("gemini"):
-        if not settings.local_summary_enabled:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Local summarization is disabled. Please specify a Gemini "
-                    "model (e.g., model_name='gemini-2.5-flash')."
-                ),
-            )
     try:
         code_bytes = await file.read()
         if is_likely_binary(code_bytes):
@@ -124,8 +104,6 @@ async def summarize(
                 persona_name=persona_name,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                model_name=model_name,
-                enable_safety=enable_safety,
             )
 
         summary = await run_in_threadpool(do_summarize)

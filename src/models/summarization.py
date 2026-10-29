@@ -3,8 +3,7 @@ import os
 import re
 from functools import lru_cache
 
-from google import genai
-from google.genai import types
+from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
 from ..config import settings
@@ -49,33 +48,23 @@ def _get_persona_system_message(
 class SummarizationModelWrapper:
     def __init__(self):
         self.model: Llama | None = None
-        self.gemini_client: genai.Client | None = None
-
-    def load_local_model(self):
-        """Load the local Llama model for summarization."""
-        self.model = Llama.from_pretrained(
-            repo_id=settings.SUMMARY_MODEL_NAME,
-            filename=settings.SUMMARY_MODEL_BASENAME,
-            n_ctx=settings.SUMMARY_N_CTX,
-            n_gpu_layers=-1,
-        )
-        logger.info(f"Local summarization model loaded: {settings.SUMMARY_MODEL_NAME}")
-
-    def load_gemini_client(self):
-        """Initialize the Gemini API client."""
-        if settings.GEMINI_API_KEY:
-            self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            logger.info("Gemini API client initialized")
-        else:
-            logger.warning("GEMINI_API_KEY not set, Gemini client not initialized")
 
     def load_model(self):
-        """Load both local model and Gemini client.
-
-        Deprecated: use load_local_model and load_gemini_client instead.
-        """
-        self.load_local_model()
-        self.load_gemini_client()
+        """Load the local Gemma model for summarization."""
+        model_path = hf_hub_download(
+            repo_id=settings.SUMMARY_MODEL_NAME,
+            filename=settings.SUMMARY_MODEL_BASENAME,
+            revision=settings.SUMMARY_MODEL_REVISION,
+        )
+        self.model = Llama(
+            model_path=model_path,
+            n_ctx=settings.SUMMARY_N_CTX,
+            n_gpu_layers=-1,
+            # Gemma's sliding-window layers only attend to their window; without
+            # this llama.cpp sizes their cache to the full context.
+            swa_full=False,
+        )
+        logger.info(f"Summarization model loaded: {settings.SUMMARY_MODEL_NAME}")
 
     def summarize(
         self,
@@ -84,32 +73,13 @@ class SummarizationModelWrapper:
         persona_name: str = "developer",
         max_tokens: int | None = None,
         temperature: float | None = None,
-        model_name: str | None = None,
-        enable_safety: bool = False,
     ) -> str:
-        # If a Gemini model is explicitly requested, use Gemini
-        if model_name and model_name.startswith("gemini"):
-            return self._summarize_gemini(
-                content,
-                language,
-                persona_name,
-                max_tokens,
-                temperature,
-                model_name,
-                enable_safety,
-            )
-        # Otherwise, use the local model
-        elif self.model is None:
-            raise RuntimeError(
-                "Local summarization model not loaded. "
-                "Either enable SUMMARY_LOCAL_ENABLED or specify a Gemini model."
-            )
-        return self._summarize_local(
-            content, language, persona_name, max_tokens, temperature
-        )
+        if self.model is None:
+            raise RuntimeError("Summarization model not loaded")
+        return self._summarize(content, language, persona_name, max_tokens, temperature)
 
     @lru_cache(maxsize=128)  # noqa: B019
-    def _summarize_local(
+    def _summarize(
         self,
         content: str,
         language: str,
@@ -147,114 +117,3 @@ class SummarizationModelWrapper:
         )
 
         return response["choices"][0]["message"]["content"]
-
-    @lru_cache(maxsize=128)  # noqa: B019
-    def _summarize_gemini(
-        self,
-        content: str,
-        language: str,
-        persona_name: str,
-        max_tokens: int | None,
-        temperature: float | None,
-        model_name: str | None,
-        enable_safety: bool = False,
-    ) -> str:
-        if not self.gemini_client:
-            raise RuntimeError("Gemini client not initialized")
-
-        final_max_tokens = (
-            max_tokens if max_tokens is not None else settings.SUMMARY_MAX_TOKEN
-        )
-        final_temperature = (
-            temperature if temperature is not None else settings.SUMMARY_TEMP
-        )
-
-        persona_type = "docs" if language.lower() == "markdown" else "code"
-        system_msg = _get_persona_system_message(
-            persona_name, persona_type, final_max_tokens, language
-        )
-
-        model_to_use = model_name if model_name else settings.GEMINI_DEFAULT_MODEL
-
-        # Configure safety settings if enabled
-        safety_settings = None
-        if enable_safety:
-            safety_settings = [
-                types.SafetySetting(
-                    category="HARM_CATEGORY_HATE_SPEECH",
-                    threshold="BLOCK_LOW_AND_ABOVE",
-                ),
-                types.SafetySetting(
-                    category="HARM_CATEGORY_HARASSMENT",
-                    threshold="BLOCK_LOW_AND_ABOVE",
-                ),
-                types.SafetySetting(
-                    category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                    threshold="BLOCK_LOW_AND_ABOVE",
-                ),
-                types.SafetySetting(
-                    category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                    threshold="BLOCK_LOW_AND_ABOVE",
-                ),
-            ]
-
-        # Build config object
-        config = types.GenerateContentConfig(
-            temperature=final_temperature,
-            max_output_tokens=final_max_tokens,
-            system_instruction=system_msg,
-            safety_settings=safety_settings,
-        )
-
-        # Generate content using new SDK with error handling
-        try:
-            response = self.gemini_client.models.generate_content(
-                model=model_to_use,
-                contents=f"Here is the {language} content:\n\n{content}",
-                config=config,
-            )
-        except Exception as e:
-            from google.genai import errors
-
-            # Handle specific Gemini API errors
-            if isinstance(e, errors.ClientError):
-                status_code = e.code
-                error_msg = str(e)
-
-                if status_code == 429:
-                    logger.warning(f"Gemini API quota exceeded: {error_msg}")
-                    return (
-                        "API quota exceeded. Please try again later or "
-                        "reduce request frequency. Check "
-                        "https://ai.google.dev/gemini-api/docs/rate-limits"
-                    )
-                elif status_code == 503:
-                    logger.warning(f"Gemini API unavailable: {error_msg}")
-                    return (
-                        "Gemini API is temporarily overloaded. "
-                        "Please try again in a few moments."
-                    )
-                else:
-                    logger.error(f"Gemini API error {status_code}: {error_msg}")
-                    return (
-                        f"API error ({status_code}): Unable to generate "
-                        "summary. Please try again."
-                    )
-            else:
-                # Unexpected error
-                logger.error(f"Unexpected error calling Gemini API: {e}")
-                return "An unexpected error occurred while generating the summary."
-
-        if not response.candidates:
-            logger.warning(
-                f"Gemini model returned no candidates. Full response: {response}"
-            )
-            return "No summary could be generated (model returned no candidates)."
-
-        if not response.candidates[0].content.parts:
-            logger.warning(
-                f"Gemini model returned no content parts. Full response: {response}"
-            )
-            return "No summary could be generated (model returned no content parts)."
-
-        return response.candidates[0].content.parts[0].text

@@ -431,9 +431,6 @@ def test_amr_endpoint_returns_attributed_candidate():
         with (
             patch("src.server.SentenceTransformerWrapper") as embedding,
             patch("src.server.SummarizationModelWrapper") as summary,
-            patch("src.server.ConversationManager"),
-            patch.object(settings, "MODEL_PROFILE", "workbench"),
-            patch.object(settings, "CHAT_MODEL_ENABLED", False),
             patch.object(settings, "AMRBART_MODEL_ENABLED", False),
         ):
             with TestClient(app, raise_server_exceptions=True) as client:
@@ -483,9 +480,6 @@ def test_amr_batch_endpoint_retains_each_attempt():
         with (
             patch("src.server.SentenceTransformerWrapper") as embedding,
             patch("src.server.SummarizationModelWrapper"),
-            patch("src.server.ConversationManager"),
-            patch.object(settings, "MODEL_PROFILE", "workbench"),
-            patch.object(settings, "CHAT_MODEL_ENABLED", False),
             patch.object(settings, "AMRBART_MODEL_ENABLED", False),
         ):
             embedding.return_value.model = MagicMock()
@@ -523,9 +517,6 @@ def test_text_embedding_batch_returns_pinned_attributed_vectors():
         with (
             patch("src.server.SentenceTransformerWrapper") as embedding,
             patch("src.server.SummarizationModelWrapper"),
-            patch("src.server.ConversationManager"),
-            patch.object(settings, "MODEL_PROFILE", "workbench"),
-            patch.object(settings, "CHAT_MODEL_ENABLED", False),
             patch.object(settings, "AMRBART_MODEL_ENABLED", False),
         ):
             embedding.return_value.model = MagicMock()
@@ -553,31 +544,15 @@ def test_text_embedding_batch_returns_pinned_attributed_vectors():
     assert all(len(vector) == 128 for vector in response.json()["embeddings"])
 
 
-def test_semantic_profile_selects_only_semantic_models(monkeypatch):
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "MODEL_PROFILE", "semantic")
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
-    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
-    monkeypatch.setattr(settings, "GEMINI_API_KEY", "configured")
-
-    assert settings.amrbart_enabled
-    assert not settings.chat_enabled
-    assert not settings.local_summary_enabled
-    assert not settings.gemini_summary_enabled
-
-
-def test_semantic_profile_lifespan_loads_embedding_and_amrbart_only():
+def test_lifespan_loads_every_enabled_model():
     from src.config import settings
 
     with (
-        patch.object(settings, "MODEL_PROFILE", "semantic"),
-        patch.object(settings, "GEMINI_API_KEY", "configured"),
+        patch.object(settings, "AMRBART_MODEL_ENABLED", True),
+        patch.object(settings, "SUMMARY_MODEL_ENABLED", True),
         patch("src.server.SentenceTransformerWrapper") as embedding,
         patch("src.server.AMRBartModelWrapper") as parser,
         patch("src.server.SummarizationModelWrapper") as summary,
-        patch("src.server.ChatModelWrapper") as chat,
-        patch("src.server.ConversationManager") as conversation_manager,
     ):
         embedding.return_value.model = MagicMock()
         parser.return_value.is_loaded = True
@@ -586,7 +561,28 @@ def test_semantic_profile_lifespan_loads_embedding_and_amrbart_only():
 
     embedding.return_value.load_model.assert_called_once_with()
     parser.return_value.load_model.assert_called_once_with()
-    summary.return_value.load_local_model.assert_not_called()
-    summary.return_value.load_gemini_client.assert_not_called()
-    chat.assert_not_called()
-    conversation_manager.assert_not_called()
+    summary.return_value.load_model.assert_called_once_with()
+
+
+def test_lifespan_skips_disabled_models():
+    from src.config import settings
+    from src.routers import summarize
+
+    with (
+        patch.object(settings, "AMRBART_MODEL_ENABLED", False),
+        patch.object(settings, "SUMMARY_MODEL_ENABLED", False),
+        patch("src.server.SentenceTransformerWrapper") as embedding,
+        patch("src.server.AMRBartModelWrapper") as parser,
+        patch("src.server.SummarizationModelWrapper") as summary,
+    ):
+        embedding.return_value.model = MagicMock()
+        with TestClient(app) as client:
+            health = client.get("/health").json()
+
+    embedding.return_value.load_model.assert_called_once_with()
+    parser.assert_not_called()
+    summary.assert_not_called()
+    assert amr.amrbart_model_wrapper is None
+    assert summarize.summarization_model_wrapper is None
+    assert health["amrbart_model"] == {"status": "disabled"}
+    assert health["summarization_model"] == {"status": "disabled"}

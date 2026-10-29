@@ -32,10 +32,7 @@ def mock_api_key_dependency():
 @pytest.fixture
 def client(monkeypatch):
     """Provides a TestClient with mocked models and disabled rate limiting."""
-    # Enable local summarization for tests
-    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
-    # Disable chat model to prevent loading real GGUF model
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", False)
+    monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", True)
 
     async def allow_all_requests(request: Request):
         pass
@@ -54,7 +51,6 @@ def client(monkeypatch):
     with (
         patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
         patch("src.server.SummarizationModelWrapper") as MockSummarizationWrapper,
-        patch("src.server.ConversationManager"),
     ):
         # Setup embedding mock
         mock_embedding_instance = MockEmbeddingWrapper.return_value
@@ -64,8 +60,7 @@ def client(monkeypatch):
 
         # Setup summarization mock
         mock_summarization_instance = MockSummarizationWrapper.return_value
-        mock_summarization_instance.load_local_model.return_value = None
-        mock_summarization_instance.load_gemini_client.return_value = None
+        mock_summarization_instance.load_model.return_value = None
         mock_summarization_instance.summarize.return_value = "This is a summary."
         mock_summarization_instance.model = MagicMock()  # Simulate loaded model
 
@@ -88,10 +83,7 @@ def caching_test_client(monkeypatch):
     Provides a TestClient where the real summarization wrapper is used,
     but the expensive model calls are mocked.
     """
-    # Enable local summarization for tests
-    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", True)
-    # Disable chat model to prevent loading real GGUF model
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", False)
+    monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", True)
 
     async def allow_all_requests(request: Request):
         pass
@@ -108,8 +100,8 @@ def caching_test_client(monkeypatch):
 
     with (
         patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
-        patch("llama_cpp.Llama.from_pretrained") as mock_from_pretrained,
-        patch("src.server.ConversationManager"),
+        patch("src.models.summarization.hf_hub_download"),
+        patch("src.models.summarization.Llama") as MockLlama,
     ):
         # Setup embedding mock
         mock_embedding_instance = MockEmbeddingWrapper.return_value
@@ -120,7 +112,7 @@ def caching_test_client(monkeypatch):
         mock_llama_instance.create_chat_completion.return_value = {
             "choices": [{"message": {"content": "This is a cached summary."}}]
         }
-        mock_from_pretrained.return_value = mock_llama_instance
+        MockLlama.return_value = mock_llama_instance
 
         with TestClient(app) as c:
             yield c, mock_llama_instance.create_chat_completion
@@ -371,22 +363,20 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
         assert "Model not loaded" in response.json()["detail"]
 
 
-def test_summarize_local_disabled(
-    client, mock_api_key_dependency, tmp_path, monkeypatch
-):
-    """Test that local summarization is disabled but Gemini can still be requested."""
-    monkeypatch.setattr(settings, "SUMMARY_LOCAL_ENABLED", False)
+def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
+    """A server started without the summarization model refuses to summarize."""
+    import src.routers.summarize as summarize_router
+
+    monkeypatch.setattr(summarize_router, "summarization_model_wrapper", None)
     headers = {"Authorization": "Bearer test_api_key"}
     (tmp_path / "test.py").write_text("def hello(): return 'world'")
 
-    # Test that local model request fails
     with open(tmp_path / "test.py", "rb") as f:
         response = client.post(
             "/summarize", files={"file": ("test.py", f)}, headers=headers
         )
-    assert response.status_code == 400
-    assert "Local summarization is disabled" in response.json()["detail"]
-    assert "Gemini model" in response.json()["detail"]
+    assert response.status_code == 503
+    assert "SUMMARY_MODEL_ENABLED" in response.json()["detail"]
 
 
 def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_path):
@@ -398,7 +388,7 @@ def test_summarizer_cache_hit(caching_test_client, mock_api_key_dependency, tmp_
     # Clear the cache on the method before the test
     from src.routers.summarize import summarization_model_wrapper
 
-    summarization_model_wrapper._summarize_local.cache_clear()
+    summarization_model_wrapper._summarize.cache_clear()
 
     # First call
     with open(tmp_path / "test.py", "rb") as f:
@@ -543,411 +533,6 @@ def test_parse_ast_syntax_error(client, mock_api_key_dependency, tmp_path):
         )
         assert response.status_code == 400
         assert "Python syntax error" in response.json()["detail"]
-
-
-# =============================================================================
-# Tool Call Streaming Suppression Tests (Integration Tests)
-# =============================================================================
-
-
-def test_streaming_suppresses_tool_calls(client, mock_api_key_dependency, monkeypatch):
-    """
-    Test that tool call content is NOT streamed as text deltas.
-
-    This is a full integration test that:
-    1. Mocks the chat model to return tool call chunks
-    2. Calls the streaming endpoint
-    3. Verifies tool call content is suppressed from the stream
-    """
-    # Enable chat model for this test
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
-
-    # Create a mock that returns synchronous generator for streaming
-    def mock_streaming_completion(*args, **kwargs):
-        chunks = [
-            {"choices": [{"delta": {"content": "<|channel|>commentary"}}]},
-            {"choices": [{"delta": {"content": " to=functions.bash "}}]},
-            {
-                "choices": [
-                    {
-                        "delta": {
-                            "content": '<|constrain|>json<|message|>{"command":"ls"}'
-                        }
-                    }
-                ]
-            },
-            {"choices": [{"delta": {"content": "<|end|>"}}]},
-        ]
-        for chunk in chunks:
-            yield chunk
-
-    def mock_create_completion(*args, **kwargs):
-        # Return synchronous generator if stream=True
-        if kwargs.get("stream", False):
-            return mock_streaming_completion(*args, **kwargs)
-        # Return dict if stream=False
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            "<|channel|>commentary to=functions.bash "
-                            '<|constrain|>json<|message|>{"command":"ls"}<|end|>'
-                        )
-                    }
-                }
-            ],
-            "usage": {},
-        }
-
-    # Create a mock chat model wrapper
-    mock_chat = MagicMock()
-    mock_chat.is_loaded = True
-    mock_chat.create_completion = mock_create_completion
-    mock_chat._parse_tool_calls = MagicMock(
-        return_value=[
-            {
-                "id": "call_123",
-                "type": "function",
-                "function": {"name": "bash", "arguments": '{"command":"ls"}'},
-            }
-        ]
-    )
-
-    # Patch the global chat_model_wrapper in responses.py
-    import src.routers.responses
-
-    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
-
-    headers = {"Authorization": "Bearer test_api_key"}
-    request_body = {
-        "input": [{"type": "message", "role": "user", "content": "List files"}],
-        "model": "test-model",
-    }
-
-    # Make streaming request (TestClient handles streaming automatically)
-    response = client.post("/v1/responses", json=request_body, headers=headers)
-
-    assert response.status_code == 200
-
-    # Collect all events from the stream
-    events = []
-    for line in response.iter_lines():
-        if line:
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            events.append(decoded)
-
-    # Verify NO text delta events contain tool call markers
-    text_delta_events = [e for e in events if "output_text.delta" in e]
-
-    for event in text_delta_events:
-        # Tool call markers should NOT appear in text deltas
-        assert "<|channel|>commentary" not in event
-        assert "to=functions.bash" not in event
-        assert "<|constrain|>json" not in event
-        assert '{"command":"ls"}' not in event
-
-
-def test_streaming_allows_regular_text(client, mock_api_key_dependency, monkeypatch):
-    """
-    Test that regular text content IS streamed normally.
-
-    This verifies that the streaming suppression only affects tool calls,
-    not regular text responses.
-    """
-    # Enable chat model for this test
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
-
-    # Create a mock that returns synchronous generator for streaming
-    def mock_streaming_completion(*args, **kwargs):
-        chunks = [
-            {"choices": [{"delta": {"content": "Hello"}}]},
-            {"choices": [{"delta": {"content": " world"}}]},
-            {"choices": [{"delta": {"content": "!"}}]},
-        ]
-        for chunk in chunks:
-            yield chunk
-
-    def mock_create_completion(*args, **kwargs):
-        # Return synchronous generator if stream=True
-        if kwargs.get("stream", False):
-            return mock_streaming_completion(*args, **kwargs)
-        # Return dict if stream=False
-        return {
-            "choices": [{"message": {"content": "Hello world!"}}],
-            "usage": {},
-        }
-
-    # Create a mock chat model wrapper
-    mock_chat = MagicMock()
-    mock_chat.is_loaded = True
-    mock_chat.create_completion = mock_create_completion
-    mock_chat._parse_tool_calls = MagicMock(return_value=None)
-
-    # Patch the global chat_model_wrapper in responses.py
-    import src.routers.responses
-
-    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
-
-    headers = {"Authorization": "Bearer test_api_key"}
-    request_body = {
-        "input": [{"type": "message", "role": "user", "content": "Say hello"}],
-        "model": "test-model",
-        "stream": True,  # Enable streaming
-    }
-
-    # Make streaming request (TestClient handles streaming automatically)
-    response = client.post("/v1/responses", json=request_body, headers=headers)
-
-    assert response.status_code == 200
-
-    # Collect all events from the stream
-    events = []
-    for line in response.iter_lines():
-        if line:
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            events.append(decoded)
-
-    # Verify text delta events ARE present
-    text_delta_events = [e for e in events if "output_text.delta" in e]
-    assert len(text_delta_events) > 0
-
-    # Verify the content is correct
-    import json
-
-    deltas = []
-    for event in text_delta_events:
-        if "data: " in event:
-            data_str = event.split("data: ", 1)[1]
-            data = json.loads(data_str)
-            if "delta" in data:
-                deltas.append(data["delta"])
-
-    # Should contain the regular text
-    full_text = "".join(deltas)
-    assert "Hello" in full_text or "world" in full_text
-
-
-def test_streaming_mixed_text_and_tool_calls(
-    client, mock_api_key_dependency, monkeypatch
-):
-    """
-    Test that when the model outputs both text and tool calls,
-    only the text is streamed (tool calls are suppressed).
-    """
-    # Enable chat model for this test
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
-
-    # Create a mock that returns synchronous generator for streaming
-    def mock_streaming_completion(*args, **kwargs):
-        chunks = [
-            {"choices": [{"delta": {"content": "Let me check that. "}}]},
-            {"choices": [{"delta": {"content": "<|channel|>commentary"}}]},
-            {"choices": [{"delta": {"content": " to=functions.bash "}}]},
-            {
-                "choices": [
-                    {
-                        "delta": {
-                            "content": '<|constrain|>json<|message|>{"command":"ls"}'
-                        }
-                    }
-                ]
-            },
-            {"choices": [{"delta": {"content": "<|end|>"}}]},
-            {"choices": [{"delta": {"content": " Done!"}}]},
-        ]
-        for chunk in chunks:
-            yield chunk
-
-    def mock_create_completion(*args, **kwargs):
-        # Return synchronous generator if stream=True
-        if kwargs.get("stream", False):
-            return mock_streaming_completion(*args, **kwargs)
-        # Return dict if stream=False
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            "Let me check that. "
-                            "<|channel|>commentary to=functions.bash "
-                            '<|constrain|>json<|message|>{"command":"ls"}<|end|> Done!'
-                        )
-                    }
-                }
-            ],
-            "usage": {},
-        }
-
-    # Create a mock chat model wrapper
-    mock_chat = MagicMock()
-    mock_chat.is_loaded = True
-    mock_chat.create_completion = mock_create_completion
-    mock_chat._parse_tool_calls = MagicMock(
-        return_value=[
-            {
-                "id": "call_123",
-                "type": "function",
-                "function": {"name": "bash", "arguments": '{"command":"ls"}'},
-            }
-        ]
-    )
-
-    # Patch the global chat_model_wrapper in responses.py
-    import src.routers.responses
-
-    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
-
-    headers = {"Authorization": "Bearer test_api_key"}
-    request_body = {
-        "input": [{"type": "message", "role": "user", "content": "List files"}],
-        "model": "test-model",
-        "stream": True,  # Enable streaming
-    }
-
-    # Make streaming request (TestClient handles streaming automatically)
-    response = client.post("/v1/responses", json=request_body, headers=headers)
-
-    assert response.status_code == 200
-
-    # Collect all events from the stream
-    events = []
-    for line in response.iter_lines():
-        if line:
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            events.append(decoded)
-
-    # Verify text delta events exist
-    text_delta_events = [e for e in events if "output_text.delta" in e]
-
-    import json
-
-    deltas = []
-    for event in text_delta_events:
-        if "data: " in event:
-            data_str = event.split("data: ", 1)[1]
-            data = json.loads(data_str)
-            if "delta" in data:
-                deltas.append(data["delta"])
-
-    full_text = "".join(deltas)
-
-    # Should contain regular text
-    assert "Let me check that" in full_text or "Done" in full_text
-
-    # Should NOT contain tool call markers
-    assert "<|channel|>commentary" not in full_text
-    assert "to=functions.bash" not in full_text
-    assert '{"command":"ls"}' not in full_text
-
-
-def test_streaming_suppresses_standalone_json(
-    client, mock_api_key_dependency, monkeypatch
-):
-    """
-    Test that standalone JSON tool calls are NOT streamed as text.
-
-    This tests the fix for the "leak" where standalone JSON like
-    {"command":"git show cffd1ec","timeout": 10000} was appearing
-    in the chat message even though it was also executed as a tool call.
-    """
-    # Enable chat model for this test
-    monkeypatch.setattr(settings, "CHAT_MODEL_ENABLED", True)
-
-    # Create a mock that returns synchronous generator for streaming
-    def mock_streaming_completion(*args, **kwargs):
-        chunks = [
-            {"choices": [{"delta": {"content": "Let me check: "}}]},
-            {"choices": [{"delta": {"content": '{"command":"'}}]},
-            {"choices": [{"delta": {"content": 'git status",'}}]},
-            {"choices": [{"delta": {"content": '"timeout":5000}'}}]},
-            {"choices": [{"delta": {"content": " Done!"}}]},
-        ]
-        for chunk in chunks:
-            yield chunk
-
-    def mock_create_completion(*args, **kwargs):
-        # Return synchronous generator if stream=True
-        if kwargs.get("stream", False):
-            return mock_streaming_completion(*args, **kwargs)
-        # Return dict if stream=False
-        return {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            "Let me check: "
-                            '{"command":"git status","timeout":5000} Done!'
-                        )
-                    }
-                }
-            ],
-            "usage": {},
-        }
-
-    # Create a mock chat model wrapper
-    mock_chat = MagicMock()
-    mock_chat.is_loaded = True
-    mock_chat.create_completion = mock_create_completion
-    mock_chat._parse_tool_calls = MagicMock(
-        return_value=[
-            {
-                "id": "call_123",
-                "type": "function",
-                "function": {
-                    "name": "bash",
-                    "arguments": '{"command":"git status","timeout":5000}',
-                },
-            }
-        ]
-    )
-
-    # Patch the global chat_model_wrapper in responses.py
-    import src.routers.responses
-
-    monkeypatch.setattr(src.routers.responses, "chat_model_wrapper", mock_chat)
-
-    headers = {"Authorization": "Bearer test_api_key"}
-    request_body = {
-        "input": [{"type": "message", "role": "user", "content": "Check status"}],
-        "model": "test-model",
-        "stream": True,
-    }
-
-    # Make streaming request
-    response = client.post("/v1/responses", json=request_body, headers=headers)
-
-    assert response.status_code == 200
-
-    # Collect all events from the stream
-    events = []
-    for line in response.iter_lines():
-        if line:
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            events.append(decoded)
-
-    # Verify text delta events exist
-    text_delta_events = [e for e in events if "output_text.delta" in e]
-
-    import json
-
-    deltas = []
-    for event in text_delta_events:
-        if "data: " in event:
-            data_str = event.split("data: ", 1)[1]
-            data = json.loads(data_str)
-            if "delta" in data:
-                deltas.append(data["delta"])
-
-    full_text = "".join(deltas)
-
-    # Should contain regular text before and after
-    assert "Let me check: " in full_text or "Done!" in full_text
-
-    # Should NOT contain the standalone JSON
-    assert '{"command"' not in full_text
-    assert '"git status"' not in full_text
-    assert '"timeout":5000' not in full_text
 
 
 def test_embed_tokens_returns_a_vector_per_span(client, mock_api_key_dependency):
