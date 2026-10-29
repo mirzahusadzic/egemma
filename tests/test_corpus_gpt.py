@@ -1,4 +1,6 @@
+import asyncio
 import json
+import threading
 
 import pytest
 from fastapi import FastAPI
@@ -107,3 +109,79 @@ def test_corpus_bounds_are_refused(sentences, detail):
     response = TestClient(app).post("/corpus/gpt", json=body)
     assert response.status_code == 422
     assert detail in json.dumps(response.json())
+
+
+def _app():
+    app = FastAPI()
+    app.include_router(corpus.router)
+    return app
+
+
+@pytest.mark.parametrize(
+    ("body", "detail"),
+    [
+        ({"words": {"k": "w" * 257}}, "at most 256 characters"),
+        ({"positions": {"k": [[0, 0]] * 200_001}}, "at most 200000 are read"),
+        (
+            {"words": {f"k{n}": "keeper" for n in range(4000)}, "dimensions": 512},
+            "at most 2000000 are returned",
+        ),
+    ],
+    ids=["word too long", "too many places", "too much output"],
+)
+def test_corpus_read_back_is_bounded(body, detail):
+    response = TestClient(_app()).post(
+        "/corpus/gpt", json={"sentences": SENTENCES, "stream": False, **body}
+    )
+    assert response.status_code == 422
+    assert detail in json.dumps(response.json())
+
+
+def test_a_request_past_the_waiting_room_is_turned_away(monkeypatch):
+    full = threading.BoundedSemaphore(1)
+    full.acquire()
+    monkeypatch.setattr(corpus, "_admission", full)
+    response = TestClient(_app()).post(
+        "/corpus/gpt", json={"sentences": SENTENCES, "steps": 1, "stream": False}
+    )
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "30"
+
+
+def test_a_caller_that_goes_away_cancels_its_training(monkeypatch):
+    """Streamed or not, the training stops and gives its slot back."""
+    stopped = threading.Event()
+
+    def train(cancelled, **kwargs):
+        while not cancelled():
+            pass
+        stopped.set()
+        raise Cancelled()
+
+    class Gone:
+        async def is_disconnected(self):
+            return True
+
+    monkeypatch.setattr(corpus, "train_corpus_gpt", train)
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(corpus, "_admission", slots)
+
+    async def run():
+        slots.acquire()
+        queue, gone = corpus._start({})
+        return [event async for event in corpus._events(queue, gone, Gone())]
+
+    assert asyncio.run(run()) == []
+    assert stopped.wait(5)
+    assert slots.acquire(blocking=False)  # the slot came back
+
+
+def test_a_server_fault_is_a_500_not_a_client_error(monkeypatch):
+    def train(**kwargs):
+        raise RuntimeError("backend broke")
+
+    monkeypatch.setattr(corpus, "train_corpus_gpt", train)
+    response = TestClient(_app()).post(
+        "/corpus/gpt", json={"sentences": SENTENCES, "stream": False}
+    )
+    assert response.status_code == 500
