@@ -16,8 +16,8 @@ API.
 | Summarization | Gemma 4 26B A4B (QAT Q4_0, llama.cpp) | `/summarize` |
 | Python structure | the standard library's `ast` | `/parse-ast` |
 
-Endpoints require a bearer key and are rate-limited per client. The
-[API reference](docs/api.md) documents every request and response.
+Endpoints require a bearer key, and the model endpoints are rate-limited per
+client. The [API reference](docs/api.md) documents every request and response.
 
 ## Quick start
 
@@ -96,8 +96,9 @@ curl -sS http://localhost:8000/summarize \
 ```
 
 **Embeddings.** `/embed/texts` embeds whole texts. `/embed/tokens` reads a word
-in its sentence: the model's state at a character span. EmbeddingGemma's window
-is 2,048 tokens; split longer inputs.
+in its sentence: the model's state at a character span. EmbeddingGemma reads
+2,048 tokens: `/embed/texts` truncates past that, and `/embed/tokens` refuses the
+text. Split longer inputs.
 
 **Corpus transformer.** `/corpus/gpt` trains a small network on your sentences
 alone and returns its vectors for the words you name. Since it knows nothing
@@ -174,13 +175,15 @@ flowchart LR
 
 **AMR.** Each result keeps the raw decoded text (`linearized_raw`), an indented
 display (`linearized`), and a validated PENMAN graph with typed `triples`.
-`decode_status` is `ok`, `invalid` (diagnostics kept, no graph), or
-`input_too_long` (skipped). Inputs over 400 source tokens are never silently
-truncated. Graphs are linguistic interpretations; downstream systems decide
+`decode_status` is `ok`, `invalid` (diagnostics kept, no graph),
+`input_too_long` (skipped), or `timed_out` (generation passed its deadline; no
+graph). Inputs over 400 source tokens are never silently truncated. Graphs are linguistic interpretations; downstream systems decide
 their use.
 
 **Summarization.** Personas are editable system prompts in
 [`personas/`](personas/README.md). Log files are condensed before summarizing.
+The response says `"truncated": true` when the token limit, not the model, ended
+the summary.
 
 ## Configuration
 
@@ -189,15 +192,17 @@ environment; restart the server after changing them.
 
 | Setting | Default |
 | --- | --- |
-| `SUMMARY_N_CTX` | `8192` tokens |
-| `SUMMARY_MAX_TOKEN` | `300` |
+| `SUMMARY_N_CTX` | `32768` tokens |
+| `SUMMARY_MAX_TOKEN` | `512` |
+| `MAX_FILE_SIZE_BYTES` | `5242880` (5 MB) per upload |
 | `AMRBART_MAX_SOURCE_TOKENS` | `400`, including boundary tokens |
 | `AMRBART_MAX_GRAPH_TOKENS` | `1024` |
 | `AMRBART_BATCH_MAX_INPUTS` | `64` |
 | `EMBEDDING_BATCH_MAX_INPUTS` | `256` |
 
-Rate limits apply per client IP, HTTP method, and route, within one process;
-`/rate-limits` reports them. Run a single worker.
+Rate limits apply to the embedding, AMR, and summarization endpoints, per client
+IP, HTTP method, and route, within one process; `/rate-limits` reports them. Run a
+single worker.
 
 ## Development
 

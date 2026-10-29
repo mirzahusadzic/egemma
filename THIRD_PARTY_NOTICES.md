@@ -6,14 +6,26 @@ training datasets are bundled in this repository.
 
 ## Adapted code
 
-[`src/models/corpus_gpt.py`](src/models/corpus_gpt.py) adapts the GPT model and
-training recipe of [nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej
-Karpathy (its `model.py` and `train.py`, as of commit
-`3adf61e154c3fe3fca428ad6bc3818b27a3b8291`): pre-norm blocks of causal
-self-attention and a GELU MLP, the token embedding tied to the output head, the
-weights drawn from N(0, 0.02), AdamW with betas (0.9, 0.95) and weight decay 0.1,
-and a warmed-up cosine learning rate. eGemma's version is written compactly,
-smaller and trained on a caller's corpus for one request.
+[`src/models/corpus_gpt.py`](src/models/corpus_gpt.py) adapts the GPT model of
+[nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej Karpathy (its `model.py`
+and `train.py`, as of commit `3adf61e154c3fe3fca428ad6bc3818b27a3b8291`). It
+keeps nanoGPT's architecture: pre-norm blocks of causal self-attention and a GELU
+MLP, learned position embeddings, and the token embedding tied to the output
+head. From the training recipe it keeps weights drawn from N(0, 0.02), AdamW with
+betas (0.9, 0.95) and weight decay 0.1, and gradient clipping at 1.0.
+
+eGemma's version is written compactly, is much smaller (4 layers, 4 heads and 64
+dimensions by default), and trains on one caller's corpus for one request,
+sentence by sentence with begin and end tokens and padding that the loss
+ignores. It also departs from nanoGPT's recipe:
+
+- weight decay applies to every parameter, not only to matrices and embeddings;
+- biases keep PyTorch's default initialization rather than zeros, and the
+  residual projections are not scaled down by depth;
+- dropout is 0.1;
+- the learning rate, peaking at 3·10⁻³, is a 100-step warmup multiplied by a
+  cosine over all steps that decays to zero, rather than a warmup followed by a
+  cosine decay to a floor.
 
 nanoGPT is covered by the MIT License, copyright (c) 2022 Andrej Karpathy,
 reproduced in [`LICENSES/nanoGPT-MIT.txt`](LICENSES/nanoGPT-MIT.txt).

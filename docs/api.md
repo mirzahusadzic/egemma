@@ -70,8 +70,11 @@ curl -X POST "http://localhost:8000/embed/tokens" \
 
 Vectors are the transformer's full-width output before EmbeddingGemma's pooling,
 projection and normalization, so they are not Matryoshka embeddings and are
-not comparable with `/embed/texts` vectors. A request holds 1–256 items, each
-text 1–16,384 characters. Out-of-range spans or empty texts return HTTP 422.
+not comparable with `/embed/texts` vectors. Each state reads the whole text,
+before and after the span. A request holds 1–256 items, each text 1–16,384
+characters. Out-of-range spans or empty texts return HTTP 422, and so does a text
+longer than the model's 2,048-token window, with its token count; texts are never
+cut.
 
 ### POST /embed
 
@@ -79,7 +82,7 @@ Embed one uploaded file.
 
 | Query parameter | Default | Description |
 | --- | --- | --- |
-| `dimensions` | 128 | 128, 256, 512, or 768 |
+| `dimensions` | 128 | One or more of 128, 256, 512 and 768 (repeat the parameter); one `embedding_<n>d` field each |
 | `prompt_name` | document | A supported EmbeddingGemma prompt: query, document, STS, … |
 | `title` | null | Optional title for document embeddings |
 
@@ -92,6 +95,8 @@ curl -X POST "http://localhost:8000/embed?dimensions=256&prompt_name=document" \
 ```json
 {"embedding_256d": [0.123, -0.456, ...]}
 ```
+
+Uploads past 5 MB return HTTP 413; binary or non-UTF-8 files return HTTP 400.
 
 ---
 
@@ -121,7 +126,7 @@ back, under keys of its choosing:
 
 | Field | Default | Bounds | Meaning |
 | --- | --- | --- | --- |
-| `sentences` | required | 1–20,000 | Each sentence as a list of words; the vocabulary is exactly these words |
+| `sentences` | required | 1–20,000 sentences of at most 256 words; at most 20,000 distinct words | Each sentence as a list of words; the vocabulary is exactly these words |
 | `words` | `{}` | | Key → word: return that word's token-embedding row (the learned weights). A key whose word is absent is omitted. |
 | `positions` | `{}` | | Key → `[[sentence, word], …]`, zero-based: return the hidden state at each layer at those places, averaged. An out-of-range place returns HTTP 422. |
 | `steps` | 1500 | 1–20,000 | Training steps (batches of up to 32 sentences) |
@@ -177,7 +182,9 @@ training at its next step.
 }
 ```
 
-`layers` has one object per block, first to last. Vectors are raw, in this
+`layers` has one object per block, first to last. The network is causal: a state
+at a word has seen that word and the ones before it in its sentence, not the ones
+after, unlike `/embed/tokens`, which reads the whole text. Vectors are raw, in this
 network's own space: compare them within one result, not across trainings or
 with EmbeddingGemma vectors directly. To set two sources side by side, compare
 their geometry instead, for example each word's nearest neighbours or the rank
@@ -262,6 +269,7 @@ Both AMR endpoints return HTTP 200 for these per-input results:
 | `ok` | A complete graph was decoded; `penman`, `top`, and `triples` are available. |
 | `invalid` | Inference ran but decoding failed. Raw output, the error, and diagnostic fragments are retained; `penman` and `top` are `null`, and `triples` is empty. |
 | `input_too_long` | The complete source exceeds the token budget. Inference is skipped; graph strings are empty, `penman` and `top` are `null`, and triples/fragments and output tokens are empty/zero. `decode_error` states the count and limit. |
+| `timed_out` | Generation reached its deadline (`AMRBART_MAX_SECONDS`, 45 s by default). What the search held then is not the graph it would have returned, so none is kept: the fields are empty as for `input_too_long`, and `decode_error` states the deadline. |
 
 The default limits are 1–64 inputs per batch, 1–16,384 characters per input,
 400 source tokens, and 1,024 generated tokens. Source tokens include the text
@@ -286,10 +294,10 @@ Summarize a code, Markdown, or log file with the local Gemma 4 model and a
 
 | Form parameter | Default | Description |
 | --- | --- | --- |
-| `file` | required | File to summarize (up to 5 MB, not binary) |
+| `file` | required | File to summarize: UTF-8 text, at most 5 MB |
 | `persona` | `developer`, or `assistant` for Markdown | Persona file name, e.g. `log_analyst`, `security_validator` |
-| `max_tokens` | 300 | Maximum summary tokens |
-| `temperature` | 0.7 | Sampling temperature |
+| `max_tokens` | 512 | Maximum summary tokens, at least 1 |
+| `temperature` | 0.7 | Sampling temperature, at least 0 |
 
 ```bash
 curl -X POST "http://localhost:8000/summarize" \
@@ -301,12 +309,16 @@ curl -X POST "http://localhost:8000/summarize" \
 ```json
 {
   "language": "Python",
-  "summary": "This module implements..."
+  "summary": "This module implements...",
+  "truncated": false
 }
 ```
 
-The language comes from the file extension. Content plus the persona prompt
-must fit the model context (`SUMMARY_N_CTX`, 8,192 tokens by default).
+The language comes from the file extension. `truncated` is true when
+`max_tokens` ended the summary rather than the model. The file and its persona,
+plus `max_tokens` for the summary, must fit the model's context (`SUMMARY_N_CTX`,
+32,768 tokens by default); otherwise the request is refused with HTTP 413 and the
+token counts. Uploads past 5 MB also return 413, and binary files 400.
 
 ---
 
@@ -327,6 +339,9 @@ curl -X POST "http://localhost:8000/parse-ast" \
   -F "file=@code.py" \
   -F "language=python"
 ```
+
+Uploads past 5 MB return HTTP 413; non-UTF-8 files and Python syntax errors
+return HTTP 400.
 
 ```json
 {
@@ -403,8 +418,8 @@ curl "http://localhost:8000/rate-limits"
 
 Budgets are per client IP, HTTP method, and matched route template, so each
 embedding endpoint has its own `embed` budget. Storage is in-process; these
-limits assume a single worker. `/corpus/gpt` is not rate-limited: it trains one
-network at a time.
+limits assume a single worker. `/corpus/gpt` and `/parse-ast` are not
+rate-limited: the first trains one network at a time, and the second runs no model.
 
 ---
 
@@ -412,9 +427,10 @@ network at a time.
 
 | Code | Description |
 |------|-------------|
-| 400 | Bad request (for example a binary upload or unsupported language) |
+| 400 | Bad request: a binary or non-UTF-8 upload, an unsupported language, or a Python syntax error |
 | 401 | Invalid API key |
 | 403 | Missing or malformed bearer credentials |
+| 413 | An upload past 5 MB, or a file too long for the summarizer's context |
 | 422 | Request validation failed |
 | 429 | Too many requests (rate limit exceeded) |
 | 500 | Internal server error |

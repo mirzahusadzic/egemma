@@ -41,7 +41,8 @@ curl -X POST "http://localhost:8000/summarize" \
 
 Markdown files use `docs/`; every other file type uses `code/`. A persona that
 does not exist falls back to that folder's `default.md`. The placeholders
-`{language}` and `{max_tokens}` are filled in when present.
+`{language}` and `{max_tokens}` are filled in. Any other brace, such as in a JSON
+example, is kept as written; doubled braces (`{{`, `}}`) stand for single ones.
 
 ## Modifying Personas
 
