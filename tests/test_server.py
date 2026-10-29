@@ -7,6 +7,7 @@ import pytest
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from src.models.summarization import Summary, SummaryInputTooLong
 from src.routers.embed import EmbeddingDimensions
 from src.server import app, get_api_key, settings
 from src.util.rate_limiter import get_in_memory_rate_limiter
@@ -61,7 +62,9 @@ def client(monkeypatch):
         # Setup summarization mock
         mock_summarization_instance = MockSummarizationWrapper.return_value
         mock_summarization_instance.load_model.return_value = None
-        mock_summarization_instance.summarize.return_value = "This is a summary."
+        mock_summarization_instance.summarize.return_value = Summary(
+            "This is a summary.", truncated=False
+        )
         mock_summarization_instance.model = MagicMock()  # Simulate loaded model
 
         # Now create TestClient, so lifespan runs with mocks active
@@ -109,8 +112,15 @@ def caching_test_client(monkeypatch):
         mock_embedding_instance.model = MagicMock()
 
         mock_llama_instance = MagicMock()
+        mock_llama_instance.tokenize.return_value = [1] * 10
+        mock_llama_instance.n_ctx.return_value = settings.SUMMARY_N_CTX
         mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": "This is a cached summary."}}]
+            "choices": [
+                {
+                    "message": {"content": "This is a cached summary."},
+                    "finish_reason": "stop",
+                }
+            ]
         }
         MockLlama.return_value = mock_llama_instance
 
@@ -341,7 +351,29 @@ def test_summarize_valid_api_key(client, mock_api_key_dependency, tmp_path):
             "/summarize", files={"file": ("test.py", f)}, headers=headers
         )
     assert response.status_code == 200
-    assert response.json() == {"language": "Python", "summary": "This is a summary."}
+    assert response.json() == {
+        "language": "Python",
+        "summary": "This is a summary.",
+        "truncated": False,
+    }
+
+
+def test_summarize_input_past_the_context(client, mock_api_key_dependency, tmp_path):
+    import src.routers.summarize as summarize_router
+
+    headers = {"Authorization": "Bearer test_api_key"}
+    (tmp_path / "big.py").write_text("x = 1\n")
+    with patch.object(
+        summarize_router.summarization_model_wrapper,
+        "summarize",
+        side_effect=SummaryInputTooLong("the context holds 32768"),
+    ):
+        with open(tmp_path / "big.py", "rb") as f:
+            response = client.post(
+                "/summarize", files={"file": ("big.py", f)}, headers=headers
+            )
+    assert response.status_code == 413
+    assert "32768" in response.json()["detail"]
 
 
 def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_path):

@@ -14,7 +14,7 @@ from fastapi import (
 from fastapi.concurrency import run_in_threadpool
 
 from ..config import settings
-from ..models.summarization import SummarizationModelWrapper
+from ..models.summarization import SummarizationModelWrapper, SummaryInputTooLong
 from ..util import condense_log, is_likely_binary
 from ..util.rate_limiter import get_in_memory_rate_limiter
 
@@ -46,10 +46,10 @@ async def summarize(
     request: Request,  # Add request object to access headers
     file: Annotated[UploadFile, File(..., max_size=settings.MAX_FILE_SIZE_BYTES)],
     max_tokens: int | None = Form(
-        default=None, description="Maximum number of tokens for the summary."
+        default=None, ge=1, description="Maximum number of tokens for the summary."
     ),
     temperature: float | None = Form(
-        default=None, description="Temperature for the summary generation."
+        default=None, ge=0, description="Temperature for the summary generation."
     ),
     persona: str | None = Form(
         default=None,
@@ -108,7 +108,15 @@ async def summarize(
 
         summary = await run_in_threadpool(do_summarize)
 
-        return {"language": language, "summary": summary}
+        return {
+            "language": language,
+            "summary": summary.text,
+            "truncated": summary.truncated,
+        }
+    except SummaryInputTooLong as e:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(e)
+        ) from e
     except HTTPException as e:
         logger.error(
             f"Summarization failed with HTTP Exception: {e.detail} "

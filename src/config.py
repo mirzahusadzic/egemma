@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     SUMMARY_MODEL_NAME: str = "google/gemma-4-26B-A4B-it-qat-q4_0-gguf"
     SUMMARY_MODEL_BASENAME: str = "gemma-4-26B_q4_0-it.gguf"
     SUMMARY_MODEL_REVISION: str = "d1c082be9cf3c8a514acf63b8761f4b41935842e"
-    SUMMARY_MAX_TOKEN: int = 300
+    SUMMARY_MAX_TOKEN: int = 512
     SUMMARY_TEMP: float = 0.7
-    SUMMARY_N_CTX: int = 8192
+    SUMMARY_N_CTX: int = 32768
     MAX_FILE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
     BINARY_DETECTION_THRESHOLD: float = 0.1
     CACHE_MAX_SIZE: int = 128

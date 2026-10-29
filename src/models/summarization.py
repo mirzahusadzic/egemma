@@ -1,7 +1,9 @@
 import logging
 import os
 import re
+import threading
 from functools import lru_cache
+from typing import NamedTuple
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
@@ -11,6 +13,18 @@ from ..config import settings
 logger = logging.getLogger(__name__)
 
 _PERSONA_FIELD = re.compile(r"\{\{|\}\}|\{(language|max_tokens)\}")
+
+# The chat template's own tokens around the two turns, with room to spare.
+_TEMPLATE_TOKENS = 64
+
+
+class SummaryInputTooLong(ValueError):
+    """The file and its persona leave the summary no room in the context."""
+
+
+class Summary(NamedTuple):
+    text: str
+    truncated: bool  # max_tokens ended the summary, not the model
 
 
 def _get_persona_system_message(
@@ -52,6 +66,8 @@ def _get_persona_system_message(
 class SummarizationModelWrapper:
     def __init__(self):
         self.model: Llama | None = None
+        # One llama.cpp context: concurrent calls would share and corrupt it.
+        self._inference_lock = threading.Lock()
 
     def load_model(self):
         """Load the local Gemma model for summarization."""
@@ -77,7 +93,7 @@ class SummarizationModelWrapper:
         persona_name: str = "developer",
         max_tokens: int | None = None,
         temperature: float | None = None,
-    ) -> str:
+    ) -> Summary:
         if self.model is None:
             raise RuntimeError("Summarization model not loaded")
         return self._summarize(content, language, persona_name, max_tokens, temperature)
@@ -90,7 +106,7 @@ class SummarizationModelWrapper:
         persona_name: str,
         max_tokens: int | None,
         temperature: float | None,
-    ) -> str:
+    ) -> Summary:
         if self.model is None:
             raise RuntimeError("Model not loaded")
 
@@ -114,10 +130,25 @@ class SummarizationModelWrapper:
             },
         ]
 
-        response = self.model.create_chat_completion(
-            messages=messages,
-            temperature=final_temperature,
-            max_tokens=final_max_tokens,
-        )
+        with self._inference_lock:
+            prompt_tokens = _TEMPLATE_TOKENS + sum(
+                len(self.model.tokenize(m["content"].encode("utf-8"), add_bos=False))
+                for m in messages
+            )
+            context = self.model.n_ctx()
+            if prompt_tokens + final_max_tokens > context:
+                raise SummaryInputTooLong(
+                    f"The file and its persona need about {prompt_tokens} tokens and "
+                    f"the summary up to {final_max_tokens}; the context holds "
+                    f"{context}. Split the file, or raise SUMMARY_N_CTX."
+                )
+            response = self.model.create_chat_completion(
+                messages=messages,
+                temperature=final_temperature,
+                max_tokens=final_max_tokens,
+            )
 
-        return response["choices"][0]["message"]["content"]
+        choice = response["choices"][0]
+        return Summary(
+            choice["message"]["content"], choice.get("finish_reason") == "length"
+        )
