@@ -105,7 +105,7 @@ app = fastapi.FastAPI(
         "summarization with EmbeddingGemma, AMRBART, and Gemma 4, with hardware "
         "acceleration, caching, and rate limiting."
     ),
-    version="0.4.0",
+    version="0.5.0",
     docs_url=None,
     lifespan=lifespan,
 )
