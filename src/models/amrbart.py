@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -437,17 +438,42 @@ class AMRBartModelWrapper:
         attention_mask = torch.ones_like(source)
 
         with self._inference_lock, torch.inference_mode():
+            started = time.monotonic()
             generated = self.model.generate(
                 input_ids=source,
                 attention_mask=attention_mask,
                 num_beams=settings.AMRBART_NUM_BEAMS,
                 max_length=settings.AMRBART_MAX_GRAPH_TOKENS,
+                max_time=settings.AMRBART_MAX_SECONDS,
                 min_length=0,
                 length_penalty=1.0,
                 no_repeat_ngram_size=0,
                 decoder_start_token_id=amr_bos,
                 eos_token_id=amr_eos,
                 do_sample=False,
+            )
+            elapsed = time.monotonic() - started
+        if elapsed >= settings.AMRBART_MAX_SECONDS:
+            # Stopped at its deadline: whatever the search held then is not the
+            # graph it would have returned, so none is.
+            return AMRParseResult(
+                model=settings.AMRBART_MODEL_NAME,
+                revision=settings.AMRBART_MODEL_REVISION,
+                device=self.device,
+                input_tokens=len(input_ids),
+                output_tokens=0,
+                linearized="",
+                linearized_raw="",
+                penman=None,
+                top=None,
+                triples=(),
+                fragments=(),
+                decode_status="timed_out",
+                decode_error=(
+                    "Generation reached its "
+                    f"{settings.AMRBART_MAX_SECONDS:g} s deadline. "
+                    "Split the source into shorter inputs."
+                ),
             )
 
         token_ids = generated[0].detach().cpu().tolist()

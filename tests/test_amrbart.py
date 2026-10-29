@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -5,7 +6,7 @@ import numpy as np
 import penman
 import pytest
 import torch
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from penman.models.amr import model as amr_model
 
@@ -295,6 +296,61 @@ def test_model_returns_ordered_validated_triples(monkeypatch):
     assert result.top == "z0"
     assert result.triples[0] == AMRTriple("z0", ":instance", "contrast-01", "literal")
     assert AMRTriple("z1", ":ARG1", "z2", "node") in result.triples
+
+
+def test_generation_past_its_deadline_returns_no_graph(monkeypatch):
+    wrapper = AMRBartModelWrapper()
+    tokenizer = MagicMock()
+    tokenizer.convert_tokens_to_ids.side_effect = lambda token: {
+        "<AMR>": 10,
+        "</AMR>": 11,
+    }[token]
+    tokenizer.unk_token_id = 0
+    tokenizer.mask_token_id = 12
+    tokenizer.return_value.input_ids.__getitem__.return_value.tolist.return_value = [
+        1,
+        2,
+    ]
+    tokenizer.decode.return_value = RAW_GRAPH
+    model = MagicMock()
+    wrapper.tokenizer = tokenizer
+    wrapper.model = model
+    wrapper.device = "cpu"
+    monkeypatch.setattr("src.models.amrbart.torch.tensor", MagicMock())
+    monkeypatch.setattr("src.models.amrbart.torch.ones_like", MagicMock())
+    clock = iter([0.0, settings.AMRBART_MAX_SECONDS + 1])
+    monkeypatch.setattr("src.models.amrbart.time.monotonic", lambda: next(clock))
+
+    result = wrapper.parse("text")
+
+    assert model.generate.call_args.kwargs["max_time"] == settings.AMRBART_MAX_SECONDS
+    assert result.decode_status == "timed_out"
+    assert result.penman is None and result.triples == ()
+
+
+def test_amr_batch_stops_once_its_client_has_gone():
+    wrapper = MagicMock()
+    wrapper.is_loaded = True
+    wrapper.parse.return_value = "parsed"
+    gone = iter([False, True, True])
+
+    class Request:
+        async def is_disconnected(self):
+            return next(gone)
+
+    amr.amrbart_model_wrapper = wrapper
+    try:
+        with pytest.raises(HTTPException) as stopped:
+            asyncio.run(
+                amr.parse_amr_batch(
+                    amr.AMRParseBatchRequest(texts=["one", "two", "three"]), Request()
+                )
+            )
+    finally:
+        amr.amrbart_model_wrapper = None
+
+    assert stopped.value.status_code == 499
+    assert wrapper.parse.call_count == 1
 
 
 def test_pointer_graph_decoder_rejects_unknown_reference():

@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     AMRBART_MAX_SOURCE_TOKENS: int = 400
     AMRBART_MAX_GRAPH_TOKENS: int = 1024
     AMRBART_NUM_BEAMS: int = 5
+    # One text's generation stops here; its output is then dropped, never kept
+    # partial (a stopped beam search can return a complete but other graph).
+    AMRBART_MAX_SECONDS: float = 45.0
     AMRBART_MAX_INPUT_CHARS: int = 16_384
     AMRBART_BATCH_MAX_INPUTS: int = 64
     AMRBART_RATE_LIMIT_SECONDS: int = 60

@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -105,7 +105,9 @@ async def parse_amr(request: AMRParseRequest) -> AMRParseResult:
         )
     ],
 )
-async def parse_amr_batch(request: AMRParseBatchRequest) -> list[AMRParseResult]:
+async def parse_amr_batch(
+    request: AMRParseBatchRequest, http_request: Request
+) -> list[AMRParseResult]:
     if amrbart_model_wrapper is None or not amrbart_model_wrapper.is_loaded:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -123,10 +125,22 @@ async def parse_amr_batch(request: AMRParseBatchRequest) -> list[AMRParseResult]
             detail="Every AMR input must be nonempty and within the configured bound.",
         )
 
+    results = []
     try:
-        return await run_in_threadpool(
-            lambda: [amrbart_model_wrapper.parse(text) for text in request.texts]
-        )
+        for text in request.texts:
+            # A caller that has gone is answered nothing: the texts it left are
+            # not parsed, and the next caller does not wait behind them.
+            if await http_request.is_disconnected():
+                logger.info(
+                    "AMR batch abandoned after %d of %d texts",
+                    len(results),
+                    len(request.texts),
+                )
+                raise HTTPException(status_code=499, detail="Client closed the request")
+            results.append(await run_in_threadpool(amrbart_model_wrapper.parse, text))
+        return results
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("AMRBART batch inference failed")
         raise HTTPException(
