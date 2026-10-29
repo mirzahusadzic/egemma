@@ -38,6 +38,10 @@ def span_means(offsets, states, spans):
     return means
 
 
+class TextTooLong(ValueError):
+    """A text needs more tokens than the model reads at once."""
+
+
 class SentenceTransformerWrapper:
     def __init__(self):
         self.model: "SentenceTransformer | None" = None
@@ -84,17 +88,27 @@ class SentenceTransformerWrapper:
     def token_states(self, items: list[tuple[str, list[tuple[int, int]]]]):
         """Each text read as written (no prompt): for each character span asked,
         the mean of the last layer's states of the sub-word tokens it overlaps.
-        A span no token overlaps gives None."""
+        A span no token overlaps gives None. A text longer than the model's window
+        raises TextTooLong before any is read: it is never cut."""
         if self.model is None:
             raise RuntimeError("Model not loaded")
         module = self.model[0]
         tokenizer, network = module.tokenizer, module.auto_model
+        window = self.model.max_seq_length
+        texts = [
+            tokenizer(text, return_offsets_mapping=True, return_tensors="pt")
+            for text, _ in items
+        ]
+        for k, encoded in enumerate(texts):
+            count = encoded["input_ids"].shape[1]
+            if count > window:
+                raise TextTooLong(
+                    f"Item {k} needs {count} tokens; the model reads {window}. "
+                    "Split the text."
+                )
         out = []
         with torch.no_grad():
-            for text, spans in items:
-                encoded = tokenizer(
-                    text, return_offsets_mapping=True, return_tensors="pt"
-                )
+            for encoded, (_, spans) in zip(texts, items, strict=True):
                 offsets = encoded.pop("offset_mapping")[0].tolist()
                 encoded = {k: v.to(self.model.device) for k, v in encoded.items()}
                 states = network(**encoded).last_hidden_state[0].float().cpu().numpy()

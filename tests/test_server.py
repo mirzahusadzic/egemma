@@ -659,3 +659,21 @@ def test_parse_ast_rejects_text_that_is_not_utf8(client, mock_api_key_dependency
     )
     assert response.status_code == 400
     assert "UTF-8" in response.json()["detail"]
+
+
+def test_embed_tokens_refuses_a_text_past_the_window(client, mock_api_key_dependency):
+    import src.routers.embed as embed_router
+    from src.models.embedding import TextTooLong
+
+    with patch.object(
+        embed_router.embedding_model_wrapper,
+        "token_states",
+        side_effect=TextTooLong("Item 0 needs 2049 tokens; the model reads 2048."),
+    ):
+        response = client.post(
+            "/embed/tokens",
+            json={"items": [{"text": "a text", "spans": [[0, 1]]}]},
+            headers={"Authorization": "Bearer test_api_key"},
+        )
+    assert response.status_code == 422
+    assert "2049 tokens" in response.json()["detail"]

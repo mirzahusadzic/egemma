@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from ..config import settings
-from ..models.embedding import SentenceTransformerWrapper
+from ..models.embedding import SentenceTransformerWrapper, TextTooLong
 from ..util import is_likely_binary, read_upload
 from ..util.rate_limiter import get_in_memory_rate_limiter
 
@@ -286,6 +286,10 @@ async def embed_tokens(request: TokenStatesRequest):
             dimensions=width or 0,
             items=items,
         )
+    except TextTooLong as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     except Exception as exc:
         logger.exception("Token states failed")
         raise HTTPException(
