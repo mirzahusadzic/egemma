@@ -143,3 +143,34 @@ def test_condense_log_with_multiple_brackets_in_message():
         "[2023-01-01 10:00:01] INFO: Processed request [ID: 12345] for user [john.doe]"
     )
     assert condense_log(log_content, repetition_threshold=3) == expected_output
+
+
+def test_condense_log_keeps_the_order_of_lines_it_does_not_collapse():
+    log_content = "[t1] start\n[t2] retry\n[t3] connected\n[t4] retry"
+    assert condense_log(log_content, repetition_threshold=3) == log_content
+
+
+def test_condense_log_collapses_iso_timestamped_lines():
+    log_content = "\n".join(
+        f"2026-01-01T08:00:0{k}.120Z WARN disk slow" for k in range(6)
+    )
+    assert condense_log(log_content, repetition_threshold=5) == (
+        "(Repeated 6 times between 2026-01-01T08:00:00.120Z and "
+        "2026-01-01T08:00:05.120Z)\n"
+        "2026-01-01T08:00:00.120Z WARN disk slow"
+    )
+
+
+def test_condense_log_collapses_in_place():
+    log_content = "\n".join(
+        ["2026-01-01 08:00:00,001 INFO boot"]
+        + [f"2026-01-01 08:00:0{k},002 WARN retry" for k in range(1, 4)]
+        + ["2026-01-01 08:00:05,003 INFO ready"]
+    )
+    assert condense_log(log_content, repetition_threshold=3).split("\n") == [
+        "2026-01-01 08:00:00,001 INFO boot",
+        "(Repeated 3 times between 2026-01-01 08:00:01,002 and "
+        "2026-01-01 08:00:03,002)",
+        "2026-01-01 08:00:01,002 WARN retry",
+        "2026-01-01 08:00:05,003 INFO ready",
+    ]

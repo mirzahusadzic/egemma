@@ -1,16 +1,24 @@
 import re
 
+# A leading timestamp: bracketed ("[2023-01-01 10:00:01] ...") or ISO 8601
+# ("2026-01-01T10:00:01.123Z ...", "2026-01-01 10:00:01,123 ...").
+_TIMESTAMP = re.compile(
+    r"^(?:\[(?P<bracketed>[^]]*)\]"
+    r"|(?P<iso>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?))"
+)
+
 
 def condense_log(log_content: str, repetition_threshold: int = 5) -> str:
     """
-    Condenses a log file by identifying and collapsing repetitive lines.
+    Condenses a log file by collapsing lines that repeat apart from their timestamp.
 
-    It generalizes lines by replacing timestamps (e.g., `[YYYY-MM-DD HH:MM:SS]`)
-    with a `[TIMESTAMP]` placeholder to identify recurring patterns.
-    If a generalized line occurs more than `repetition_threshold` times,
-    it is condensed into a summary line indicating the repetition count and
-    the time range of its occurrences, followed by the generalized line
-    with its *first* timestamp restored.
+    A line is compared without its leading timestamp, bracketed
+    (`[YYYY-MM-DD HH:MM:SS]`) or ISO 8601. A line that occurs at least
+    `repetition_threshold` times is replaced, where it first occurs, by a summary
+    line giving the count and the time range, followed by its first occurrence; its
+    later occurrences are dropped. Every other line keeps its place, so the log
+    stays in order.
 
     Args:
         log_content: The full content of the log file as a string.
@@ -22,58 +30,35 @@ def condense_log(log_content: str, repetition_threshold: int = 5) -> str:
         A condensed version of the log content as a single string, with
         each line separated by a newline character.
     """
-    condensed_lines = []
-    # Dictionary to store generalized lines and their original occurrences
-    # Key: generalized_line, Value: list of (original_line, timestamp)
-    generalized_line_occurrences = {}
-
-    # Regex patterns for common dynamic elements
-    TIMESTAMP_PATTERN = re.compile(r"^\[[^]]*\]")
-
-    def generalize_line(line: str) -> tuple[str, str | None]:
-        """Replaces the timestamp in a log line with a `[TIMESTAMP]` placeholder
-        and extracts the original timestamp.
-
-        Args:
-            line: The log line to generalize.
-
-        Returns:
-            A tuple containing the generalized line (with `[TIMESTAMP]` placeholder)
-            and the extracted original timestamp string,
-            or `None` if no timestamp was found.
-        """
-        original_timestamp = None
-        match = TIMESTAMP_PATTERN.match(line)
-
-        if match:
-            original_timestamp = match.group(0).strip("[]")
-            line = TIMESTAMP_PATTERN.sub("[TIMESTAMP]", line)
-
-        return line, original_timestamp
+    lines: list[tuple[str, tuple[str | None, str]]] = []
+    # The timestamps of each line, keyed by the line without its timestamp.
+    stamps: dict[tuple[str | None, str], list[str | None]] = {}
 
     for line in log_content.splitlines():
         if not line.strip():
             continue
+        match = _TIMESTAMP.match(line)
+        if match:
+            kind = match.lastgroup
+            key = (kind, line[match.end() :])
+            stamp = match.group(kind)
+        else:
+            key, stamp = (None, line), None
+        lines.append((line, key))
+        stamps.setdefault(key, []).append(stamp)
 
-        generalized_line, timestamp = generalize_line(line)
-
-        if generalized_line not in generalized_line_occurrences:
-            generalized_line_occurrences[generalized_line] = []
-        generalized_line_occurrences[generalized_line].append((line, timestamp))
-
-    for generalized_line, occurrences in generalized_line_occurrences.items():
-        if len(occurrences) >= repetition_threshold:
-            first_timestamp = occurrences[0][1]
-            last_timestamp = occurrences[-1][1]
+    condensed_lines = []
+    collapsed = set()
+    for line, key in lines:
+        occurrences = stamps[key]
+        if len(occurrences) < repetition_threshold:
+            condensed_lines.append(line)
+        elif key not in collapsed:
+            collapsed.add(key)
             condensed_lines.append(
                 f"(Repeated {len(occurrences)} times between "
-                f"{first_timestamp} and {last_timestamp})"
+                f"{occurrences[0]} and {occurrences[-1]})"
             )
-            condensed_lines.append(
-                generalized_line.replace("[TIMESTAMP]", f"[{first_timestamp}]")
-            )  # Restore first timestamp for clarity
-        else:
-            for original_line, _ in occurrences:
-                condensed_lines.append(original_line)
+            condensed_lines.append(line)
 
     return "\n".join(condensed_lines)
