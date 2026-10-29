@@ -19,6 +19,20 @@ No separate upstream NOTICE file is present at this revision.
 The Python project metadata records `MIT AND Apache-2.0` to account for this
 bundled material; eGemma's own code remains MIT.
 
+## Adapted code
+
+[`src/models/corpus_gpt.py`](src/models/corpus_gpt.py) adapts the GPT model and
+training recipe of [nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej
+Karpathy (its `model.py` and `train.py`, as of commit
+`3adf61e154c3fe3fca428ad6bc3818b27a3b8291`): pre-norm blocks of causal
+self-attention and a GELU MLP, the token embedding tied to the output head, the
+weights drawn from N(0, 0.02), AdamW with betas (0.9, 0.95) and weight decay 0.1,
+and a warmed-up cosine learning rate. eGemma's version is written compactly,
+smaller and trained on a caller's corpus for one request.
+
+nanoGPT is covered by the MIT License, copyright (c) 2022 Andrej Karpathy,
+reproduced in [`LICENSES/nanoGPT-MIT.txt`](LICENSES/nanoGPT-MIT.txt).
+
 ## Semantic parsing dependencies
 
 | Package | License | Source |

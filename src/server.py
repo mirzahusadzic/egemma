@@ -18,7 +18,7 @@ from .models.llm import ChatModelWrapper
 from .models.summarization import SummarizationModelWrapper
 
 # Import routers
-from .routers import amr, ast_parser, conversations, embed, responses, summarize
+from .routers import amr, ast_parser, conversations, corpus, embed, responses, summarize
 
 # Configure logging with explicit format to ensure visibility
 logging.basicConfig(
@@ -319,6 +319,9 @@ async def list_models():
 
 # Embedding router
 app.include_router(embed.router, dependencies=[Depends(get_api_key)])
+
+# Corpus transformer router
+app.include_router(corpus.router, dependencies=[Depends(get_api_key)])
 
 # Abstract Meaning Representation router
 app.include_router(amr.router, dependencies=[Depends(get_api_key)])
