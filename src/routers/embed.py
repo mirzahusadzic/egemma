@@ -58,6 +58,30 @@ class TextEmbeddingBatchResponse(BaseModel):
     embeddings: list[list[float]]
 
 
+class TokenSpanItem(BaseModel):
+    text: str
+    spans: list[tuple[int, int]] = Field(min_length=1, max_length=64)
+
+
+class TokenStatesRequest(BaseModel):
+    items: list[TokenSpanItem] = Field(
+        min_length=1,
+        max_length=settings.EMBEDDING_BATCH_MAX_INPUTS,
+    )
+
+
+class TokenStatesItem(BaseModel):
+    vectors: list[list[float] | None]
+
+
+class TokenStatesResponse(BaseModel):
+    model: str
+    revision: str
+    layer: str
+    dimensions: int
+    items: list[TokenStatesItem]
+
+
 # Shared model wrapper instance (initialized in server.py)
 embedding_model_wrapper: SentenceTransformerWrapper | None = None
 
@@ -194,3 +218,75 @@ async def embed(
         raise HTTPException(
             status_code=500, detail=f"An internal server error occurred: {e}"
         ) from e
+
+
+@router.post(
+    "/embed/tokens",
+    summary="The last layer's state of character spans in their text",
+    response_model=TokenStatesResponse,
+    dependencies=[
+        Depends(
+            get_in_memory_rate_limiter(
+                rate_limit_seconds=settings.EMBED_RATE_LIMIT_SECONDS,
+                rate_limit_calls=settings.EMBED_RATE_LIMIT_CALLS,
+            )
+        )
+    ],
+)
+async def embed_tokens(request: TokenStatesRequest):
+    """A word read in its sentence: for each span, the mean of the last layer's
+    states of the tokens it overlaps (the text read as written, no prompt; the
+    full width, unnormalized)."""
+    if embedding_model_wrapper is None or embedding_model_wrapper.model is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Embedding model not loaded.",
+        )
+    for item in request.items:
+        if not item.text or len(item.text) > settings.EMBEDDING_MAX_INPUT_CHARS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "Every text must be nonempty and within the configured "
+                    "character bound."
+                ),
+            )
+        if any(not (0 <= a < b <= len(item.text)) for a, b in item.spans):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Every span must lie within its text and be nonempty.",
+            )
+    try:
+        states = await run_in_threadpool(
+            embedding_model_wrapper.token_states,
+            [
+                (item.text, [tuple(span) for span in item.spans])
+                for item in request.items
+            ],
+        )
+        items, width = [], None
+        for row in states:
+            vectors = []
+            for vector in row:
+                if vector is None:
+                    vectors.append(None)
+                    continue
+                values = vector.tolist()
+                if any(not math.isfinite(v) for v in values):
+                    raise RuntimeError("Token state has invalid coordinates")
+                width = width or len(values)
+                vectors.append(values)
+            items.append(TokenStatesItem(vectors=vectors))
+        return TokenStatesResponse(
+            model=settings.EMBEDDING_MODEL_NAME,
+            revision=settings.EMBEDDING_MODEL_REVISION,
+            layer="last",
+            dimensions=width or 0,
+            items=items,
+        )
+    except Exception as exc:
+        logger.exception("Token states failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Token states failed: {exc}",
+        ) from exc

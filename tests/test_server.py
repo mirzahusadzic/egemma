@@ -948,3 +948,58 @@ def test_streaming_suppresses_standalone_json(
     assert '{"command"' not in full_text
     assert '"git status"' not in full_text
     assert '"timeout":5000' not in full_text
+
+
+def test_embed_tokens_returns_a_vector_per_span(client, mock_api_key_dependency):
+    import src.routers.embed as embed_router
+
+    headers = {"Authorization": "Bearer test_api_key"}
+    states = [[np.array([0.5, 1.5]), None]]
+    with patch.object(
+        embed_router.embedding_model_wrapper, "token_states", return_value=states
+    ) as mock_states:
+        response = client.post(
+            "/embed/tokens",
+            json={"items": [{"text": "Who withheld it?", "spans": [[4, 12], [0, 3]]}]},
+            headers=headers,
+        )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["layer"] == "last" and body["dimensions"] == 2
+    assert body["items"] == [{"vectors": [[0.5, 1.5], None]}]
+    mock_states.assert_called_once_with([("Who withheld it?", [(4, 12), (0, 3)])])
+
+
+def test_embed_tokens_refuses_a_span_outside_its_text(client, mock_api_key_dependency):
+    headers = {"Authorization": "Bearer test_api_key"}
+    response = client.post(
+        "/embed/tokens",
+        json={"items": [{"text": "short", "spans": [[2, 40]]}]},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+def test_embed_tokens_reports_a_failure(client, mock_api_key_dependency):
+    import src.routers.embed as embed_router
+
+    headers = {"Authorization": "Bearer test_api_key"}
+    with patch.object(
+        embed_router.embedding_model_wrapper,
+        "token_states",
+        side_effect=RuntimeError("Model not loaded"),
+    ):
+        response = client.post(
+            "/embed/tokens",
+            json={"items": [{"text": "a text", "spans": [[0, 1]]}]},
+            headers=headers,
+        )
+    assert response.status_code == 500
+    assert "Model not loaded" in response.json()["detail"]
+
+
+def test_embed_tokens_needs_a_key(client):
+    response = client.post(
+        "/embed/tokens", json={"items": [{"text": "a text", "spans": [[0, 1]]}]}
+    )
+    assert response.status_code == 403

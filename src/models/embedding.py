@@ -26,6 +26,18 @@ def _get_optimal_device() -> str:
         return "cpu"
 
 
+def span_means(offsets, states, spans):
+    """The mean state of the tokens each character span overlaps (a token with
+    an empty offset, a special token, never counts); None where none does."""
+    means = []
+    for start, end in spans:
+        rows = [
+            k for k, (x, y) in enumerate(offsets) if y > x and x < end and y > start
+        ]
+        means.append(states[rows].mean(axis=0) if rows else None)
+    return means
+
+
 class SentenceTransformerWrapper:
     def __init__(self):
         self.model: "SentenceTransformer | None" = None
@@ -68,6 +80,26 @@ class SentenceTransformerWrapper:
         if self.model is None:
             raise RuntimeError("Model not loaded")
         return self.model.encode(texts, prompt_name=prompt_name)
+
+    def token_states(self, items: list[tuple[str, list[tuple[int, int]]]]):
+        """Each text read as written (no prompt): for each character span asked,
+        the mean of the last layer's states of the sub-word tokens it overlaps.
+        A span no token overlaps gives None."""
+        if self.model is None:
+            raise RuntimeError("Model not loaded")
+        module = self.model[0]
+        tokenizer, network = module.tokenizer, module.auto_model
+        out = []
+        with torch.no_grad():
+            for text, spans in items:
+                encoded = tokenizer(
+                    text, return_offsets_mapping=True, return_tensors="pt"
+                )
+                offsets = encoded.pop("offset_mapping")[0].tolist()
+                encoded = {k: v.to(self.model.device) for k, v in encoded.items()}
+                states = network(**encoded).last_hidden_state[0].float().cpu().numpy()
+                out.append(span_means(offsets, states, spans))
+        return out
 
     @property
     def supported_prompts(self) -> list[str]:
