@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from src.models.summarization import _get_persona_system_message
@@ -55,3 +57,34 @@ def test_get_persona_system_message_raises_error_if_no_persona_found(
             max_tokens=100,
             language="python",
         )
+
+
+def test_braces_other_than_the_placeholders_are_text(setup_test_personas):
+    """A JSON example beside a placeholder no longer breaks the persona."""
+    Path("personas/docs/validator.md").write_text(
+        'Answer in {max_tokens} tokens as:\n{\n  "score": 0.9\n}\nfor {language}; {{x}}'
+    )
+    message = _get_persona_system_message(
+        persona_name="validator", persona_type="docs", max_tokens=300, language="Go"
+    )
+    assert message == 'Answer in 300 tokens as:\n{\n  "score": 0.9\n}\nfor Go; {x}'
+
+
+@pytest.mark.parametrize(
+    "path", sorted(Path(__file__).parent.parent.glob("personas/*/*.md")), ids=str
+)
+def test_every_shipped_persona_renders(path, monkeypatch):
+    """Each persona fills; where str.format worked before, the text is unchanged."""
+    monkeypatch.chdir(path.parent.parent.parent)
+    message = _get_persona_system_message(
+        persona_name=path.stem,
+        persona_type=path.parent.name,
+        max_tokens=300,
+        language="Python",
+    )
+    assert "{language}" not in message and "{max_tokens}" not in message
+    try:
+        expected = path.read_text().format(language="Python", max_tokens=300)
+    except (KeyError, IndexError, ValueError):
+        return  # str.format rejected this persona's literal braces
+    assert message == expected

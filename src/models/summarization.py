@@ -10,6 +10,8 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+_PERSONA_FIELD = re.compile(r"\{\{|\}\}|\{(language|max_tokens)\}")
+
 
 def _get_persona_system_message(
     persona_name: str, persona_type: str, max_tokens: int, language: str
@@ -38,11 +40,13 @@ def _get_persona_system_message(
     with open(persona_path, "r") as f:
         persona_content = f.read()
 
-    # Safely format, only if placeholders exist
-    format_kwargs = {"language": language, "max_tokens": max_tokens}
-    if "{language}" in persona_content or "{max_tokens}" in persona_content:
-        return persona_content.format(**format_kwargs)
-    return persona_content
+    # Fill the two placeholders. Doubled braces stand for one, as in str.format;
+    # any other brace (a JSON example, say) is text.
+    values = {"language": language, "max_tokens": str(max_tokens)}
+    return _PERSONA_FIELD.sub(
+        lambda m: values[m.group(1)] if m.group(1) else m.group(0)[0],
+        persona_content,
+    )
 
 
 class SummarizationModelWrapper:

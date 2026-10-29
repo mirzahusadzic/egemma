@@ -11,7 +11,7 @@ Given a user's question and semantically-retrieved conversation excerpts (classi
 4. Clearly indicates information quality via overlay metadata
 5. States what's missing if the history is incomplete
 
-Aim to answer within `{{max_tokens}}` tokens.
+Aim to answer within `{max_tokens}` tokens.
 
 ## Response Format
 

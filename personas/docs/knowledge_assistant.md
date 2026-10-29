@@ -10,7 +10,7 @@ Given a user's question and a set of relevant concept excerpts from the manual, 
 3. Synthesizes multiple concepts into a coherent explanation
 4. States clearly if the concepts don't fully answer the question
 
-Aim to answer within `{{max_tokens}}` tokens.
+Aim to answer within `{max_tokens}` tokens.
 
 ## Response Format
 
