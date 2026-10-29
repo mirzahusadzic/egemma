@@ -1,21 +1,213 @@
 # eGemma API Reference
 
-Complete API documentation for all eGemma endpoints.
-
 - **Base URL:** `http://localhost:8000`
-- **Authentication:** Bearer token via `Authorization: Bearer <WORKBENCH_API_KEY>`
+- **Authentication:** `Authorization: Bearer <WORKBENCH_API_KEY>` on every
+  endpoint except `/health` and `/rate-limits`
+
+| Area | Endpoints | Model |
+| --- | --- | --- |
+| [Embeddings](#embeddings) | `/embed/texts`, `/embed/tokens`, `/embed` | EmbeddingGemma 300M |
+| [Corpus transformer](#corpus-transformer) | `/corpus/gpt` | nanoGPT-design network trained per request |
+| [AMR](#abstract-meaning-representation) | `/amr/parse`, `/amr/parse-batch` | AMRBART |
+| [Summarization](#summarization) | `/summarize` | Gemma 4 |
+| [AST parsing](#ast-parsing) | `/parse-ast` | none (Python `ast`) |
+| [Monitoring](#monitoring) | `/health`, `/rate-limits` | |
+
+---
+
+## Embeddings
+
+All three endpoints use the pinned local EmbeddingGemma revision, which is
+always loaded.
+
+### POST /embed/texts
+
+Embed 1–256 texts in one request. The request selects one supported prompt and
+one Matryoshka dimension (128 by default; 256, 512 or 768 explicitly); the
+response repeats the exact model, revision, dimension and prompt.
+
+```bash
+curl -X POST "http://localhost:8000/embed/texts" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"texts":["candidate relation","canonical relation"],"dimensions":768,"prompt_name":"STS"}'
+```
+
+JSON is wire transport only; callers decide durable representation. Each input
+must contain 1–16,384 characters by default. The encoder has a 2,048-token
+window, including any task prompt, and may truncate beyond it; split longer
+inputs before embedding when full source coverage is required.
+
+### POST /embed/tokens
+
+A word read in its sentence. For each character span asked, the response gives
+the mean of EmbeddingGemma's last-layer states over the sub-word tokens the
+span overlaps. Use it when the same word should be compared as it is used in
+different texts, which a whole-text embedding cannot separate.
+
+```bash
+curl -X POST "http://localhost:8000/embed/tokens" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"items":[{"text":"The valve closes the tank.","spans":[[4,9],[21,25]]}]}'
+```
+
+```json
+{
+  "model": "google/embeddinggemma-300m",
+  "revision": "57c266a740f537b4dc058e1b0cda161fd15afa75",
+  "layer": "last",
+  "dimensions": 768,
+  "items": [{"vectors": [[0.012, -0.341, ...], [0.207, 0.055, ...]]}]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `items[].text` | The text, read as written: no task prompt is added |
+| `items[].spans` | 1–64 `[start, end)` character offsets (Python string indices, i.e. code points); each must satisfy `0 <= start < end <= len(text)` |
+| `items[].vectors` | One vector per span, in order; `null` where the span overlaps no token. Special tokens never count. |
+
+Vectors are the transformer's full-width output before EmbeddingGemma's pooling,
+projection and normalization, so they are not Matryoshka embeddings and are
+not comparable with `/embed/texts` vectors. A request holds 1–256 items, each
+text 1–16,384 characters. Out-of-range spans or empty texts return HTTP 422.
+
+### POST /embed
+
+Embed one uploaded file.
+
+| Query parameter | Default | Description |
+| --- | --- | --- |
+| `dimensions` | 128 | 128, 256, 512, or 768 |
+| `prompt_name` | document | A supported EmbeddingGemma prompt: query, document, STS, … |
+| `title` | null | Optional title for document embeddings |
+
+```bash
+curl -X POST "http://localhost:8000/embed?dimensions=256&prompt_name=document" \
+  -H "Authorization: Bearer $API_KEY" \
+  -F "file=@document.txt"
+```
+
+```json
+{"embedding_256d": [0.123, -0.456, ...]}
+```
+
+---
+
+## Corpus transformer
+
+### POST /corpus/gpt
+
+Train a small transformer from scratch on the caller's sentences, then read it
+back. The network follows [nanoGPT](https://github.com/karpathy/nanoGPT)'s
+design (pre-norm causal self-attention, a GELU MLP, tied token embedding); see
+[third-party notices](../THIRD_PARTY_NOTICES.md).
+
+**Why.** A pretrained model brings what it learned elsewhere. This network knows
+nothing but the sentences it is given, so its vectors show what *the corpus
+alone* says about its own vocabulary: which words it uses in the same places and
+contexts. Set them beside a pretrained model's view of the same words, the bare
+word from `/embed/texts` or the word in its sentences from `/embed/tokens`:
+
+- where both agree, the corpus supports the general reading of a word;
+- where they differ, either the pretrained model contributes knowledge the
+  corpus does not contain, or the corpus uses the word its own way;
+- training twice, on a corpus and on that corpus plus new text (for example a
+  set of questions), shows what the new text changes.
+
+**Request.** The caller splits sentences into words and names what to read
+back, under keys of its choosing:
+
+| Field | Default | Bounds | Meaning |
+| --- | --- | --- | --- |
+| `sentences` | required | 1–20,000 | Each sentence as a list of words; the vocabulary is exactly these words |
+| `words` | `{}` | | Key → word: return that word's token-embedding row (the learned weights). A key whose word is absent is omitted. |
+| `positions` | `{}` | | Key → `[[sentence, word], …]`, zero-based: return the hidden state at each layer at those places, averaged. An out-of-range place returns HTTP 422. |
+| `steps` | 1500 | 1–20,000 | Training steps (batches of up to 32 sentences) |
+| `seed` | 7 | | Seeds initialization and batch order |
+| `dimensions` | 64 | 8–512 | Width; must divide evenly among `heads` |
+| `layers` | 4 | 1–12 | Transformer blocks |
+| `heads` | 4 | 1–16 | Attention heads |
+| `threads` | 2 | 1–8 | CPU threads for this training |
+| `stream` | true | | Server-sent progress events; `false` returns one JSON document |
+
+```bash
+curl -N -X POST "http://localhost:8000/corpus/gpt" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sentences": [["the","pump","feeds","the","tank"],
+                  ["the","valve","closes","the","tank"]],
+    "words": {"tank": "tank", "pump": "pump"},
+    "positions": {"tank": [[0,4],[1,4]], "pump": [[0,1]]},
+    "steps": 300
+  }'
+```
+
+**Streamed events** (`text/event-stream`):
+
+```text
+event: progress
+data: {"step": 25, "steps": 300, "loss": 2.1043}
+
+event: result
+data: {"model": {...}, "wte": {...}, "layers": [...]}
+```
+
+`progress` arrives every 25 steps and at the end; the stream ends with one
+`result` or one `error` (`{"detail": "..."}`). A client that disconnects stops
+training at its next step.
+
+**Result** (the `result` event, or the whole body with `"stream": false`):
+
+```json
+{
+  "model": {
+    "architecture": "nanoGPT, 4 layers, 4 heads, 64 dimensions, tied embedding",
+    "parameters": 201088,
+    "vocab": 9,
+    "tokens": 10,
+    "steps": 300,
+    "seed": 7,
+    "trainLoss": 0.1092
+  },
+  "wte": {"tank": [64 floats], "pump": [64 floats]},
+  "layers": [{"tank": [64 floats], "pump": [64 floats]}, ...]
+}
+```
+
+`layers` has one object per block, first to last. Vectors are raw, in this
+network's own space: compare them within one result, not across trainings or
+with EmbeddingGemma vectors directly. To set two sources side by side, compare
+their geometry instead, for example each word's nearest neighbours or the rank
+correlation of all pairwise similarities. States at one layer tend to share a
+common direction, so centre them (subtract the mean over keys) before comparing
+by cosine.
+
+**Reading it.** On small corpora the parts of the network tend to say different
+things. `wte` mostly reflects which words are *said together*. Deeper layers'
+states move toward which words *share roles*, the places one word could stand
+in for another. Fitting a small corpus is the point, but the role structure
+tends to appear early and then give way to memorized co-occurrence. So treat
+`steps` as a setting to compare, not a bigger-is-better budget, and repeat over
+a few seeds before trusting a difference. Corpus size is the real limit: a few
+thousand tokens give a weak signal.
+
+Training runs on CPU, one network at a time; a concurrent request waits for the
+running one. A few thousand words take about half a minute on two threads.
+Nothing is written to disk: the corpus and the network live for one request.
 
 ---
 
 ## Abstract Meaning Representation
 
+Loaded when `AMRBART_MODEL_ENABLED=true` (the default); otherwise both
+endpoints return HTTP 503.
+
 ### POST /amr/parse
 
-Parse natural-language text into an attributed AMRBART candidate graph. Set
-`MODEL_PROFILE=semantic` in `.env`, then start eGemma with
-`uv run uvicorn src.server:app --host localhost --port 8000` to load AMRBART
-together with the Matryoshka embedding model while leaving chat and
-summarization models unloaded.
+Parse natural-language text into an attributed AMRBART candidate graph.
 
 ```bash
 curl -X POST "http://localhost:8000/amr/parse" \
@@ -82,311 +274,22 @@ An invalid batch shape or character bound returns HTTP 422 for the request.
 Invalid graphs and token-overflow results do not discard other batch items;
 an unexpected inference/runtime failure returns HTTP 500.
 
-## Batched semantic embeddings
-
-### POST /embed/texts
-
-Embed 1–256 texts through the pinned local EmbeddingGemma revision. The request
-selects one supported prompt and one Matryoshka dimension (128 by default; 256,
-512 or 768 explicitly); the response repeats the exact model, revision,
-dimension and prompt.
-JSON is wire transport only—callers decide durable representation.
-Each input must contain 1–16,384 characters by default. The encoder has a
-2,048-token window, including any task prompt, and may truncate beyond it;
-split longer inputs before embedding when full source coverage is required.
-
----
-
-## Responses API (OpenAI Agent SDK)
-
-### POST /v1/responses
-
-The local Responses API subset used by the OpenAI Agents SDK examples in
-`scripts/`. Supports text, function calls, and SSE streaming; hosted tools and
-full OpenAI API parity are not provided. The `model` field labels the response;
-the server uses its configured local chat model rather than loading a model
-selected by each request.
-
-**Request Body:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `model` | string | Yes | Model name (`gpt-oss-20b`) |
-| `input` | string/array | Yes | User input (string or array of input items) |
-| `instructions` | string | No | System instructions |
-| `max_output_tokens` | integer | No | Max tokens to generate (default: 4096) |
-| `temperature` | float | No | Sampling temperature (default: 0.3) |
-| `stream` | boolean | No | Enable SSE streaming (default: false) |
-| `tools` | array | No | Tool definitions for function calling |
-| `tool_choice` | string/object | No | Tool selection mode |
-| `conversation` / `previous_response_id` | string | No | Load stored conversation history by conversation ID |
-
-Reasoning effort is configured server-side with `CHAT_REASONING_EFFORT`
-(`high` by default); per-request reasoning overrides are not implemented.
-For persisted history, pass a conversation ID created by `/v1/conversations`
-as `conversation` or `previous_response_id`. Returned response IDs are not a
-general-purpose persisted response store.
-
-**Example (Non-streaming):**
-
-```bash
-curl -X POST "http://localhost:8000/v1/responses" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-oss-20b",
-    "input": "What is 2 + 2?",
-    "instructions": "You are a helpful math assistant."
-  }'
-```
-
-**Response:**
-
-```json
-{
-  "id": "resp_abc123def456",
-  "object": "response",
-  "created_at": 1234567890,
-  "model": "gpt-oss-20b",
-  "status": "completed",
-  "output": [
-    {
-      "id": "rs_xyz789",
-      "type": "reasoning",
-      "summary": [{"type": "summary_text", "text": "Simple arithmetic..."}]
-    },
-    {
-      "id": "msg_abc123",
-      "type": "message",
-      "role": "assistant",
-      "status": "completed",
-      "content": [{"type": "output_text", "text": "2 + 2 = 4"}]
-    }
-  ],
-  "output_text": "2 + 2 = 4",
-  "usage": {
-    "input_tokens": 25,
-    "output_tokens": 10,
-    "total_tokens": 35
-  }
-}
-```
-
-**Example with Tools:**
-
-```bash
-curl -X POST "http://localhost:8000/v1/responses" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-oss-20b",
-    "input": "List files in /tmp",
-    "tools": [{
-      "type": "function",
-      "name": "bash",
-      "description": "Execute bash command",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "command": {"type": "string", "description": "Command to run"}
-        },
-        "required": ["command"]
-      }
-    }]
-  }'
-```
-
-**Tool Call Response:**
-
-```json
-{
-  "id": "resp_abc123",
-  "output": [
-    {
-      "id": "msg_xyz",
-      "type": "function_call",
-      "call_id": "call_abc123",
-      "name": "bash",
-      "arguments": "{\"command\":\"ls /tmp\"}",
-      "status": "completed"
-    }
-  ],
-  "output_text": "",
-  "status": "completed"
-}
-```
-
-### Streaming
-
-Enable streaming with `"stream": true`:
-
-```bash
-curl -N -X POST "http://localhost:8000/v1/responses" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-oss-20b", "input": "Hello!", "stream": true}'
-```
-
-**Streaming Events:**
-
-```json
-event: response.created
-data: {"type": "response.created", "response_id": "resp_xxx", "response": {...}}
-
-event: response.reasoning_summary.delta
-data: {"type": "response.reasoning_summary.delta", "delta": "Thinking...", "item_id": "rs_xxx"}
-
-event: response.output_text.delta
-data: {"type": "response.output_text.delta", "delta": "Hello", "item_id": "msg_xxx"}
-
-event: response.output_item.added
-data: {"type": "response.output_item.added", "item": {...}, "output_index": 0}
-
-event: response.completed
-data: {"type": "response.completed", "response_id": "resp_xxx", "response": {...}}
-```
-
-### Output Types
-
-| Type | Description |
-|------|-------------|
-| `reasoning` | Model's thinking/analysis (o-series compatible) |
-| `message` | Text response from assistant |
-| `function_call` | Tool/function call request |
-
----
-
-## Conversations API
-
-Manage persistent conversations for multi-turn interactions.
-
-### POST /v1/conversations
-
-Create a new conversation.
-
-```bash
-curl -X POST "http://localhost:8000/v1/conversations" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"metadata": {"title": "My Chat"}}'
-```
-
-**Response:**
-
-```json
-{
-  "id": "conv_abc123def456",
-  "object": "conversation",
-  "created_at": 1234567890,
-  "metadata": {"title": "My Chat"},
-  "items": []
-}
-```
-
-### GET /v1/conversations
-
-List all conversations.
-
-```bash
-curl "http://localhost:8000/v1/conversations?limit=20" \
-  -H "Authorization: Bearer $API_KEY"
-```
-
-### GET /v1/conversations/{conversation_id}
-
-Get a conversation by ID.
-
-```bash
-curl "http://localhost:8000/v1/conversations/conv_abc123" \
-  -H "Authorization: Bearer $API_KEY"
-```
-
-### DELETE /v1/conversations/{conversation_id}
-
-Delete a conversation.
-
-```bash
-curl -X DELETE "http://localhost:8000/v1/conversations/conv_abc123" \
-  -H "Authorization: Bearer $API_KEY"
-```
-
-### GET /v1/conversations/{conversation_id}/items
-
-Get items (messages) from a conversation.
-
-```bash
-curl "http://localhost:8000/v1/conversations/conv_abc123/items?limit=100&order=asc" \
-  -H "Authorization: Bearer $API_KEY"
-```
-
-### POST /v1/conversations/{conversation_id}/items
-
-Add items to a conversation.
-
-```bash
-curl -X POST "http://localhost:8000/v1/conversations/conv_abc123/items" \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "items": [
-      {"type": "message", "role": "user", "content": "Hello!"},
-      {"type": "message", "role": "assistant", "content": "Hi there!"}
-    ]
-  }'
-```
-
----
-
-## Embeddings
-
-### POST /embed
-
-Generate text embeddings using Gemma 300M with Matryoshka support.
-
-**Query Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `dimensions` | integer | 128 | Output dimensions: 128, 256, 512, or 768 |
-| `prompt_name` | string | document | Prompt type: query, document, clustering, etc. |
-| `title` | string | null | Optional title for document embeddings |
-
-**Example:**
-
-```bash
-curl -X POST "http://localhost:8000/embed?dimensions=256&prompt_name=document" \
-  -H "Authorization: Bearer $API_KEY" \
-  -F "file=@document.txt"
-```
-
-**Response:**
-
-```json
-{
-  "embedding_256d": [0.123, -0.456, ...]
-}
-```
-
 ---
 
 ## Summarization
 
 ### POST /summarize
 
-Summarize code, logs, or documents using local Gemma or Gemini API.
+Summarize a code, Markdown, or log file with the local Gemma 4 model and a
+[persona](../personas/README.md). Log files are condensed first. Loaded when
+`SUMMARY_MODEL_ENABLED=true` (the default); otherwise returns HTTP 503.
 
-**Form Parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `file` | file | required | File to summarize |
-| `model_name` | string | null | Model override (e.g., `gemini-2.5-flash`) |
-| `persona` | string | auto | Persona: developer, assistant, log_analyst, security_validator |
-| `max_tokens` | integer | null | Max output tokens |
-| `temperature` | float | null | Sampling temperature |
-| `enable_safety` | boolean | false | Enable Gemini safety filters |
-
-**Example:**
+| Form parameter | Default | Description |
+| --- | --- | --- |
+| `file` | required | File to summarize (up to 5 MB, not binary) |
+| `persona` | `developer`, or `assistant` for Markdown | Persona file name, e.g. `log_analyst`, `security_validator` |
+| `max_tokens` | 300 | Maximum summary tokens |
+| `temperature` | 0.7 | Sampling temperature |
 
 ```bash
 curl -X POST "http://localhost:8000/summarize" \
@@ -395,14 +298,15 @@ curl -X POST "http://localhost:8000/summarize" \
   -F "persona=developer"
 ```
 
-**Response:**
-
 ```json
 {
   "language": "Python",
   "summary": "This module implements..."
 }
 ```
+
+The language comes from the file extension. Content plus the persona prompt
+must fit the model context (`SUMMARY_N_CTX`, 8,192 tokens by default).
 
 ---
 
@@ -412,14 +316,10 @@ curl -X POST "http://localhost:8000/summarize" \
 
 Parse Python code into structured AST representation.
 
-**Form Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `file` | file | Python source file |
-| `language` | string | Must be `python` |
-
-**Example:**
+| Form parameter | Description |
+| --- | --- |
+| `file` | Python source file |
+| `language` | Must be `python` |
 
 ```bash
 curl -X POST "http://localhost:8000/parse-ast" \
@@ -427,8 +327,6 @@ curl -X POST "http://localhost:8000/parse-ast" \
   -F "file=@code.py" \
   -F "language=python"
 ```
-
-**Response:**
 
 ```json
 {
@@ -456,98 +354,71 @@ curl -X POST "http://localhost:8000/parse-ast" \
 
 ### GET /health
 
-Check server and model status (no auth required).
+Server and model status. No authentication.
 
 ```bash
 curl "http://localhost:8000/health"
 ```
 
-**Response:**
-
 ```json
 {
   "status": "ok",
-  "embedding_model": {"name": "google/embeddinggemma-300m", "status": "loaded"},
-  "local_summarization_model": {"status": "disabled"},
-  "gemini_api": {"api_key_set": true, "default_model": "gemini-2.5-flash"},
-  "chat_model": {
-    "name": "gpt-oss-20b",
-    "path": "models/",
+  "embedding_model": {
+    "name": "google/embeddinggemma-300m",
+    "revision": "57c266a740f537b4dc058e1b0cda161fd15afa75",
+    "status": "loaded"
+  },
+  "summarization_model": {
+    "name": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+    "basename": "gemma-4-26B_q4_0-it.gguf",
+    "revision": "d1c082be9cf3c8a514acf63b8761f4b41935842e",
+    "status": "loaded"
+  },
+  "amrbart_model": {
+    "name": "xfbai/AMRBART-large-finetuned-AMR3.0-AMRParsing-v2",
+    "revision": "12f7e78e3dfa6f37ddbbf77c4c152b4fc39bc512",
     "status": "loaded",
-    "context_length": 65536,
-    "supports_tools": true
+    "device": "mps"
   }
 }
 ```
 
+A model switched off in configuration reports `{"status": "disabled"}`.
+
 ### GET /rate-limits
 
-Get current rate limit configuration (no auth required).
+The configured rate-limit budgets. No authentication.
 
 ```bash
 curl "http://localhost:8000/rate-limits"
 ```
 
-**Response:**
-
 ```json
 {
   "embed": {"calls": 5, "seconds": 10},
   "amr": {"calls": 10, "seconds": 60},
-  "summarize": {"calls": 2, "seconds": 60},
-  "chat": {"calls": 100, "seconds": 60},
-  "conversation": {"calls": 100, "seconds": 60}
+  "summarize": {"calls": 2, "seconds": 60}
 }
 ```
 
-Budgets are per client IP, HTTP method, and matched route template. Different
-conversation IDs share the same route's allowance. Storage is in-process;
-these limits are intended for a single worker.
-
----
-
-## Models
-
-### GET /v1/models
-
-List available models (OpenAI-compatible).
-
-```bash
-curl "http://localhost:8000/v1/models"
-```
-
-**Response:**
-
-```json
-{
-  "object": "list",
-  "data": [{
-    "id": "gpt-oss-20b",
-    "object": "model",
-    "created": 1234567890,
-    "owned_by": "egemma"
-  }]
-}
-```
+Budgets are per client IP, HTTP method, and matched route template, so each
+embedding endpoint has its own `embed` budget. Storage is in-process; these
+limits assume a single worker. `/corpus/gpt` is not rate-limited: it trains one
+network at a time.
 
 ---
 
 ## Error Responses
 
-All endpoints return standard HTTP error codes:
-
 | Code | Description |
 |------|-------------|
-| 400 | Bad request (invalid parameters) |
-| 401 | Unauthorized (invalid API key) |
+| 400 | Bad request (for example a binary upload or unsupported language) |
+| 401 | Invalid API key |
 | 403 | Missing or malformed bearer credentials |
-| 404 | Not found (invalid conversation ID, etc.) |
 | 422 | Request validation failed |
 | 429 | Too many requests (rate limit exceeded) |
 | 500 | Internal server error |
-| 503 | Service unavailable (model not loaded) |
-
-Error response format:
+| 503 | Model not loaded (switched off in configuration) |
 
 ```json
 {

@@ -22,33 +22,26 @@ Personas are prompt templates that shape AI model responses for specific tasks:
 - `docs/operational_validator.md` - Operational pattern analysis
 - etc.
 
-## Model Selection
+## Model
 
-eGemma supports multiple models:
-
-- **Gemma** (local, open source, privacy-focused)
-- **Gemini** (API-based, powerful, requires API key)
-
-**The choice of model is yours.** Neither is "more secure" or "officially recommended."
-Both Google Gemma and Google Gemini are Google products with their own characteristics:
-
-- Gemma: Local control, privacy, no API costs
-- Gemini: Cloud-based, more capable, API costs apply
-
-**You decide which to trust and use.**
+Personas are system prompts for the local summarization model, Gemma 4 by
+default (`SUMMARY_MODEL_NAME` in `src/config.py`). Content never leaves the
+machine. Any instruction-tuned GGUF configured there receives the same personas.
 
 ## Using Personas
 
-Personas are loaded by the eGemma workbench and passed to models. To use a persona:
+Pass a persona's file name to `/summarize`:
 
-```python
-# Via API
-response = await summarize(
-    content=code,
-    persona="developer",  # Uses code/developer.md
-    model="gemini-2.5-flash"  # Or any supported model
-)
+```bash
+curl -X POST "http://localhost:8000/summarize" \
+  -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+  -F "file=@code.py" \
+  -F "persona=developer"
 ```
+
+Markdown files use `docs/`; every other file type uses `code/`. A persona that
+does not exist falls back to that folder's `default.md`. The placeholders
+`{language}` and `{max_tokens}` are filled in when present.
 
 ## Modifying Personas
 

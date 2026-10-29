@@ -1,177 +1,217 @@
 # eGemma
 
-<div align="center">
-<img src="./docs/assets/egemma-logo.png" alt="eGemma" width="320"/>
-
-Local inference for embeddings, semantic parsing, chat, and summarization.
+Local inference for embeddings, semantic parsing, corpus-trained transformers,
+and summarization. Every model runs on your machine; nothing is sent to a hosted
+API.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/mirzahusadzic/egemma/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mirzahusadzic/egemma/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-</div>
-
-| Capability | Model | Interface |
+| Capability | Model | Endpoints |
 | --- | --- | --- |
-| Embeddings | EmbeddingGemma 300M | File and text-batch endpoints; 128, 256, 512, or 768 dimensions |
-| Semantic parsing | AMRBART | Attributed AMR graphs, typed triples, and diagnostic results |
-| Chat | GPT-OSS via llama.cpp | Responses-style API, SSE streaming, and function calls |
-| Summarization | Gemma 3 12B or Gemini API | File summaries with configurable [personas](personas/README.md) |
+| Embeddings | EmbeddingGemma 300M | `/embed/texts`, `/embed/tokens`, `/embed` |
+| Corpus transformer | nanoGPT design, trained from scratch per request | `/corpus/gpt` |
+| Semantic parsing | AMRBART | `/amr/parse`, `/amr/parse-batch` |
+| Summarization | Gemma 4 26B A4B (QAT Q4_0, llama.cpp) | `/summarize` |
+| Python structure | the standard library's `ast` | `/parse-ast` |
 
-Bearer authentication and in-memory rate limits protect inference endpoints.
-Models run locally; Gemini summarization is an optional cloud service.
+Endpoints require a bearer key and are rate-limited per client. The
+[API reference](docs/api.md) documents every request and response.
 
 ## Quick start
 
-Requires Python 3.13 and [uv](https://docs.astral.sh/uv/). From the repository root:
+Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv venv --python 3.13
 uv pip install -r requirements.txt
+uv run hf auth login   # EmbeddingGemma is gated: accept its terms first
 ```
 
-`llama-cpp-python` may require a C/C++ toolchain. For accelerated chat and local
-summarization, follow its [Metal/CUDA build instructions](https://github.com/abetlen/llama-cpp-python#installation).
-EmbeddingGemma and AMRBART use PyTorch's available CPU, CUDA, or MPS backend.
+Accept the terms on the [EmbeddingGemma model page](https://huggingface.co/google/embeddinggemma-300m)
+before logging in. Gemma 4 and AMRBART need no approval. `llama-cpp-python`
+builds llama.cpp; for Metal or CUDA see its
+[installation notes](https://github.com/abetlen/llama-cpp-python#installation).
+PyTorch models use CUDA, MPS, or the CPU, whichever is available.
 
-Accept the access terms on the [EmbeddingGemma model page](https://huggingface.co/google/embeddinggemma-300m),
-then authenticate for model downloads:
-
-```bash
-uv run hf auth login
-```
-
-Create a `.env` file. This example starts the semantic profile:
+Create `.env` with a long random key, then start the server:
 
 ```env
 WORKBENCH_API_KEY=replace-with-a-long-random-key
-MODEL_PROFILE=semantic
 ```
 
 ```bash
 uv run uvicorn src.server:app --host localhost --port 8000
 ```
 
-The first start downloads the configured embedding and AMR checkpoints.
-Open [API docs](http://localhost:8000/docs); `/health` reports loaded models and revisions.
+The first start downloads about 17 GB of pinned checkpoints. Then open the
+[interactive docs](http://localhost:8000/docs), or check `/health` for each
+model's revision and status.
 
-| Profile | Startup behavior |
-| --- | --- |
-| `semantic` | Loads EmbeddingGemma and AMRBART; disables chat, summarization, and conversation storage |
-| `workbench` (default) | Loads EmbeddingGemma and the enabled chat/summarization models; AMRBART is opt-in |
+## Models and memory
 
-For chat, download a compatible [GPT-OSS GGUF](https://huggingface.co/unsloth/gpt-oss-20b-GGUF)
-and configure its actual path. Set these values in `.env`:
+Embeddings are always loaded. The other two models can be switched off:
+
+| Setting | Default | Loads |
+| --- | --- | --- |
+| `AMRBART_MODEL_ENABLED` | `true` | AMRBART for `/amr/*` |
+| `SUMMARY_MODEL_ENABLED` | `true` | Gemma 4 for `/summarize` |
+
+A disabled model's endpoints answer HTTP 503. Measured on an Apple M5 Pro: the
+full set holds about 20 GB after startup (EmbeddingGemma and AMRBART about
+4 GB; Gemma 4 about 15 GB, most of it memory-mapped weights). PyTorch's MPS
+cache adds about 3 GB once traffic flows.
+
+For a smaller summarizer, point the three summary settings at another GGUF. For
+example, Gemma 4 12B needs about 8 GB:
 
 ```env
-MODEL_PROFILE=workbench
-CHAT_MODEL_ENABLED=true
-CHAT_MODEL_PATH=models/your-gpt-oss-model.gguf
-SUMMARY_LOCAL_ENABLED=false
-AMRBART_MODEL_ENABLED=false
+SUMMARY_MODEL_NAME=google/gemma-4-12B-it-qat-q4_0-gguf
+SUMMARY_MODEL_BASENAME=gemma-4-12b-it-qat-q4_0.gguf
+SUMMARY_MODEL_REVISION=29d097773436b69ff9feafd636ab4cf873786537
 ```
 
-Set `CHAT_MODEL_ENABLED=false` for a workbench without chat. Local Gemma
-summarization requires its model access terms and `SUMMARY_LOCAL_ENABLED=true`;
-`GEMINI_API_KEY` enables the cloud alternative in the workbench profile.
-Memory requirements depend on model precision, context size, and backend.
+## Examples
 
-## Semantic API
-
-Export `WORKBENCH_API_KEY` in your client shell with the same value as the server's
-`.env`. Values in `.env` are server configuration, not shell exports; Hugging Face
-authentication uses `hf auth login` or an exported `HF_TOKEN`.
+Export `WORKBENCH_API_KEY` in your shell with the server's value.
 
 ```bash
+# Embed texts at 768 dimensions
+curl -sS http://localhost:8000/embed/texts \
+  -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"texts":["candidate relation","canonical relation"],"dimensions":768,"prompt_name":"STS"}'
+
+# Parse a sentence into an AMR graph
 curl -sS http://localhost:8000/amr/parse \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"text":"Can we adopt the parser library?"}'
 
-curl -sS http://localhost:8000/embed/texts \
+# Summarize a file with a persona
+curl -sS http://localhost:8000/summarize \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"texts":["candidate relation","canonical relation"],"dimensions":768,"prompt_name":"STS"}'
+  -F "file=@src/server.py" -F "persona=developer"
 ```
 
-AMR results retain the raw decoded text in `linearized_raw`, an indented display
-in `linearized`, and an AMR-aware PENMAN graph with matching typed `triples`.
-These are linguistic interpretations; downstream systems decide their evidential
-and operational use.
+**Embeddings.** `/embed/texts` embeds whole texts. `/embed/tokens` reads a word
+in its sentence: the model's state at a character span. EmbeddingGemma's window
+is 2,048 tokens; split longer inputs.
 
-`POST /amr/parse-batch` accepts `{"texts":["First sentence.","Second sentence."]}`
-and returns one result per input, in order. Check each `decode_status`:
+**Corpus transformer.** `/corpus/gpt` trains a small network on your sentences
+alone and returns its vectors for the words you name. Since it knows nothing
+else, it shows what the corpus by itself says about its vocabulary. Training
+streams progress as server-sent events. Its use is the comparison with the
+pretrained view:
 
-- `ok`: one complete graph was decoded.
-- `invalid`: raw model output and diagnostic fragments are retained; `penman` is `null`.
-- `input_too_long`: inference was skipped; no graph was generated.
+```mermaid
+---
+config:
+    layout: elk
+    look: neo
+    themeVariables:
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif'
+    flowchart:
+        wrappingWidth: 220
+        padding: 20
+    themeCSS: >-
+        foreignObject { overflow: visible; }
+        .node foreignObject, .node foreignObject *, .edgeLabel, .edgeLabel * {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif !important; line-height: 1.5 !important; }
+        .node foreignObject, .node foreignObject * { white-space: nowrap !important; }
+        code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+        Consolas, monospace; font-size: 0.9em; line-height: inherit;
+        color: inherit !important; text-shadow: none !important;
+        padding: 0 4px; border-radius: 4px;
+        background: color-mix(in srgb, currentColor 14%, transparent)
+        !important; }
+        .edgeLabel, .edgeLabel p, .edgeLabel span {
+        background: transparent !important; }
+        .edgeLabel rect { fill: transparent !important; }
+        .labelBkg { --knock: var(--vscode-editor-background,
+        var(--bgColor-default, rgb(from currentColor
+        clamp(30, (128 - r) * 100, 255) clamp(30, (128 - r) * 100, 255)
+        clamp(30, (128 - r) * 100, 255)))); --ring: var(--knock);
+        --fill: color-mix(in srgb, var(--ring) 30%, var(--knock));
+        background: var(--fill) !important; border-radius: 4px;
+        box-shadow: 0 0 0 5px var(--fill), 0 0 0 7px var(--ring); }
+        .label[data-id^="L_CG_CP_"] .labelBkg { --ring: #2e9e5b; }
+        .label[data-id^="L_EG_CP_"] .labelBkg { --ring: #e3a008; }
+        .edgeLabel p, .edgeLabel span, .edgeLabel text {
+        --halo: var(--fill, var(--vscode-editor-background,
+        var(--bgColor-default,
+        rgb(from currentColor clamp(0, (128 - r) * 100, 255)
+        clamp(0, (128 - r) * 100, 255) clamp(0, (128 - r) * 100, 255)))));
+        text-shadow: 1px 0 var(--halo), -1px 0 var(--halo),
+        0 1px var(--halo), 0 -1px var(--halo), 1px 1px var(--halo),
+        -1px -1px var(--halo), 1px -1px var(--halo), -1px 1px var(--halo),
+        0 0 3px var(--halo), 0 0 4px var(--halo); }
+---
+flowchart LR
+    NT["<b>Corpus + new text</b><br/>e.g. its questions"]
+    CO["<b>Corpus</b><br/>sentences split into words"]
+    CG["<b>Corpus transformer</b><br/><code>/corpus/gpt</code><br/>knows only this text"]
+    EG["<b>EmbeddingGemma</b><br/><code>/embed/texts</code> · <code>/embed/tokens</code><br/>pretrained elsewhere"]
+    CP["<b>Caller compares geometry</b><br/>agree: the corpus supports it<br/>differ: prior knowledge or local usage"]
 
-The default AMR limit is **400 source tokens including boundary tokens**. Inputs
-are never silently truncated. See the [API reference](docs/api.md) for batch,
-character, and output bounds. EmbeddingGemma has a separate 2,048-token window;
-split long embedding inputs to avoid encoder truncation.
+    NT -.->|"train again"| CG
+    CO --> CG
+    CO --> EG
+    CG -->|"weights, layer states"| CP
+    EG -->|"bare word, word in context"| CP
 
-## OpenAI Agents SDK
-
-The local `/v1/responses` endpoint implements a subset of the Responses API for
-text, function calls, and streaming. Hosted OpenAI tools and full API parity are
-not provided. The examples in [`scripts/`](scripts/) use `@openai/agents` 0.3.x;
-verify your workflow when changing SDK versions.
-
-```typescript
-import { OpenAI } from "openai";
-import { Agent, run, setDefaultOpenAIClient, setTracingDisabled } from "@openai/agents";
-
-setDefaultOpenAIClient(new OpenAI({
-  baseURL: "http://localhost:8000/v1",
-  apiKey: process.env.WORKBENCH_API_KEY,
-}));
-setTracingDisabled(true); // Disable hosted trace export.
-
-const agent = new Agent({
-  name: "local-agent",
-  model: "gpt-oss-20b",
-  instructions: "You are a helpful assistant.",
-});
-
-const result = await run(agent, "Hello!");
-console.log(result.finalOutput);
+    classDef default fill:#8a96a82e,stroke:#8a96a8,stroke-width:1px
+    classDef optional fill:#8a96a814,stroke:#8a96a8,stroke-width:1px,stroke-dasharray:6 4
+    classDef corpusOnly fill:#2e9e5b4d,stroke:#2e9e5b,stroke-width:2px
+    classDef pretrained fill:#e3a0084d,stroke:#e3a008,stroke-width:2px
+    classDef caller fill:#8e5bd64d,stroke:#8e5bd6,stroke-width:2px
+    class NT optional
+    class CG corpusOnly
+    class EG pretrained
+    class CP caller
 ```
 
-Tool definitions describe calls for the client to execute. The server does not
-execute shell commands or other supplied functions.
+**AMR.** Each result keeps the raw decoded text (`linearized_raw`), an indented
+display (`linearized`), and a validated PENMAN graph with typed `triples`.
+`decode_status` is `ok`, `invalid` (diagnostics kept, no graph), or
+`input_too_long` (skipped). Inputs over 400 source tokens are never silently
+truncated. Graphs are linguistic interpretations; downstream systems decide
+their use.
 
-## Configuration and development
+**Summarization.** Personas are editable system prompts in
+[`personas/`](personas/README.md). Log files are condensed before summarizing.
 
-Settings are defined in [`src/config.py`](src/config.py) and read from `.env` or
-environment variables. Restart the server after changing them.
+## Configuration
+
+Settings live in [`src/config.py`](src/config.py) and are read from `.env` or the
+environment; restart the server after changing them.
 
 | Setting | Default |
 | --- | --- |
-| `CHAT_N_CTX` | `65536` |
-| `CHAT_TEMPERATURE` | `0.3` |
-| `CHAT_REASONING_EFFORT` | `high` |
-| `AMRBART_MAX_SOURCE_TOKENS` | `400`, including text and AMR boundary tokens |
+| `SUMMARY_N_CTX` | `8192` tokens |
+| `SUMMARY_MAX_TOKEN` | `300` |
+| `AMRBART_MAX_SOURCE_TOKENS` | `400`, including boundary tokens |
 | `AMRBART_MAX_GRAPH_TOKENS` | `1024` |
 | `AMRBART_BATCH_MAX_INPUTS` | `64` |
 | `EMBEDDING_BATCH_MAX_INPUTS` | `256` |
 
-Rate limits are per client IP, HTTP method, and route template, within one server
-process. `/rate-limits` reports the configured budgets. Run a single worker for
-shared local model state and these limits.
+Rate limits apply per client IP, HTTP method, and route, within one process;
+`/rate-limits` reports them. Run a single worker.
+
+## Development
 
 ```bash
 uv run ruff check .
 uv run pytest
 ```
 
-Tests use mocked inference and dummy credentials; model downloads are disabled.
-The [API reference](docs/api.md) covers embeddings, AMR, responses, conversations,
-summarization, Python AST extraction, and monitoring.
+Tests mock inference and use dummy credentials; no models are downloaded.
 
 ## License
 
-eGemma's original code is [MIT-licensed](LICENSE). The bundled GPT-OSS reference
-template is Apache-2.0; dependencies and model weights retain their own licenses
-and terms. See [third-party notices](THIRD_PARTY_NOTICES.md), including PENMAN,
-AMRBART, and the Gemma models. Model weights are not included in this repository.
+eGemma's code is [MIT-licensed](LICENSE). The corpus transformer adapts
+[nanoGPT](https://github.com/karpathy/nanoGPT) (MIT). Model weights are not
+included and keep their own terms: EmbeddingGemma under the Gemma Terms of Use,
+Gemma 4 under Apache-2.0, AMRBART under MIT. See
+[third-party notices](THIRD_PARTY_NOTICES.md).
