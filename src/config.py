@@ -59,6 +59,9 @@ class Settings(BaseSettings):
         "xml": "XML",
         "sql": "SQL",
         "md": "Markdown",
+        "markdown": "Markdown",
+        "mkd": "Markdown",
+        "mdx": "Markdown",
         "log": "Log File",
     }
 

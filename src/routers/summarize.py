@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Annotated
 
 from fastapi import (
@@ -20,6 +21,18 @@ from ..util.rate_limiter import get_in_memory_rate_limiter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# A log, rotated or not: app.log, app.log.1
+_LOG_NAME = re.compile(r"\.log(\.\d+)?$", re.IGNORECASE)
+
+
+def language_of(filename: str) -> str:
+    """The language a file is summarized as, from its name."""
+    if _LOG_NAME.search(filename):
+        return "Log File"
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return settings.EXTENSION_TO_LANGUAGE.get(extension, "code")
+
 
 # Shared model wrapper instance (initialized in server.py)
 summarization_model_wrapper: SummarizationModelWrapper | None = None
@@ -49,7 +62,7 @@ async def summarize(
         default=None, ge=1, description="Maximum number of tokens for the summary."
     ),
     temperature: float | None = Form(
-        default=None, ge=0, description="Temperature for the summary generation."
+        default=None, ge=0, le=2, description="Temperature for the summary generation."
     ),
     persona: str | None = Form(
         default=None,
@@ -80,8 +93,7 @@ async def summarize(
             )
         content = code_bytes.decode("utf-8")
 
-        ext = file.filename.split(".")[-1].lower()
-        language = settings.EXTENSION_TO_LANGUAGE.get(ext, "code")
+        language = language_of(file.filename)
 
         # Condense log files before summarization
         if language == "Log File":
@@ -112,6 +124,9 @@ async def summarize(
             "language": language,
             "summary": summary.text,
             "truncated": summary.truncated,
+            "persona": summary.persona,
+            "model": settings.SUMMARY_MODEL_NAME,
+            "revision": settings.SUMMARY_MODEL_REVISION,
         }
     except SummaryInputTooLong as e:
         raise HTTPException(

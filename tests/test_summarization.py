@@ -10,6 +10,7 @@ from src.models.summarization import (
     Summary,
     SummaryInputTooLong,
 )
+from src.routers.summarize import language_of
 
 
 def _loaded(content="A summary.", finish_reason="stop", prompt_tokens=10, n_ctx=4096):
@@ -66,7 +67,7 @@ def test_summarize_sends_persona_and_content():
         "def f(): pass", language="Python", persona_name="developer", max_tokens=64
     )
 
-    assert result == Summary("A summary.", truncated=False)
+    assert result == Summary("A summary.", truncated=False, persona="code/developer")
     kwargs = wrapper.model.create_chat_completion.call_args.kwargs
     system, user = kwargs["messages"]
     assert system["role"] == "system" and system["content"]
@@ -159,7 +160,7 @@ def test_identical_concurrent_requests_make_one_summary():
         thread.join()
 
     assert wrapper.model.create_chat_completion.call_count == 1
-    assert results == [Summary("s", truncated=False)] * 3
+    assert results == [Summary("s", truncated=False, persona="code/developer")] * 3
 
 
 def test_the_summary_cache_keeps_digests_not_files(monkeypatch):
@@ -170,3 +171,26 @@ def test_the_summary_cache_keeps_digests_not_files(monkeypatch):
     keys = wrapper.cache.keys()
     assert len(keys) == 2
     assert all(len(key) == 64 and "x" not in key for key in keys)
+
+
+def test_a_missing_persona_reports_the_default_it_fell_back_to():
+    wrapper = _loaded()
+    summary = wrapper.summarize("x = 1", language="Python", persona_name="no_such")
+    assert summary.persona == "code/default"
+
+
+@pytest.mark.parametrize(
+    ("filename", "language"),
+    [
+        ("notes.md", "Markdown"),
+        ("notes.markdown", "Markdown"),
+        ("notes.mdx", "Markdown"),
+        ("app.log", "Log File"),
+        ("app.log.1", "Log File"),
+        ("APP.LOG", "Log File"),
+        ("main.py", "Python"),
+        ("Makefile", "code"),
+    ],
+)
+def test_files_are_summarized_as_their_name_says(filename, language):
+    assert language_of(filename) == language

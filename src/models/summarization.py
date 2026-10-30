@@ -25,12 +25,19 @@ class SummaryInputTooLong(ValueError):
 class Summary(NamedTuple):
     text: str
     truncated: bool  # max_tokens ended the summary, not the model
+    persona: str = ""  # the persona file used, e.g. "code/developer"
 
 
 def _get_persona_system_message(
     persona_name: str, persona_type: str, max_tokens: int, language: str
 ) -> str:
     """Loads a persona system message from a Markdown file."""
+    persona_path = _persona_path(persona_name, persona_type)
+    return _fill_persona(persona_path, max_tokens, language)
+
+
+def _persona_path(persona_name: str, persona_type: str) -> str:
+    """The persona's file, or its folder's default.md when it has none."""
     # Sanitize inputs to prevent path traversal
     sanitized_persona_name = re.sub(r"[^a-zA-Z0-9_]", "", persona_name.lower())
     sanitized_persona_type = re.sub(r"[^a-zA-Z0-9_]", "", persona_type)
@@ -50,7 +57,10 @@ def _get_persona_system_message(
                 f"No persona file found for {persona_name} or default in {persona_type}"
             )
     logger.info(f"Using persona file: {persona_path}")
+    return persona_path
 
+
+def _fill_persona(persona_path: str, max_tokens: int, language: str) -> str:
     with open(persona_path, "r") as f:
         persona_content = f.read()
 
@@ -110,9 +120,9 @@ class SummarizationModelWrapper:
 
         # Read on every call, so an edited persona takes effect at once.
         persona_type = "docs" if language.lower() == "markdown" else "code"
-        system_msg = _get_persona_system_message(
-            persona_name, persona_type, final_max_tokens, language
-        )
+        persona_path = _persona_path(persona_name, persona_type)
+        persona = os.path.splitext(os.path.relpath(persona_path, "personas"))[0]
+        system_msg = _fill_persona(persona_path, final_max_tokens, language)
 
         messages = [
             {"role": "system", "content": system_msg},
@@ -149,7 +159,9 @@ class SummarizationModelWrapper:
             )
             choice = response["choices"][0]
             summary = Summary(
-                choice["message"]["content"], choice.get("finish_reason") == "length"
+                choice["message"]["content"],
+                choice.get("finish_reason") == "length",
+                persona,
             )
             self.cache.put(key, summary)
         return summary

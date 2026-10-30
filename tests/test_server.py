@@ -63,7 +63,7 @@ def client(monkeypatch):
         mock_summarization_instance = MockSummarizationWrapper.return_value
         mock_summarization_instance.load_model.return_value = None
         mock_summarization_instance.summarize.return_value = Summary(
-            "This is a summary.", truncated=False
+            "This is a summary.", truncated=False, persona="code/developer"
         )
         mock_summarization_instance.model = MagicMock()  # Simulate loaded model
 
@@ -355,6 +355,9 @@ def test_summarize_valid_api_key(client, mock_api_key_dependency, tmp_path):
         "language": "Python",
         "summary": "This is a summary.",
         "truncated": False,
+        "persona": "code/developer",
+        "model": settings.SUMMARY_MODEL_NAME,
+        "revision": settings.SUMMARY_MODEL_REVISION,
     }
 
 
@@ -810,3 +813,13 @@ def test_parse_ast_refuses_code_nested_too_deeply(client, mock_api_key_dependenc
     )
     assert response.status_code == 400
     assert "nested too deeply" in response.json()["detail"]
+
+
+def test_summarize_bounds_the_temperature(client, mock_api_key_dependency):
+    response = client.post(
+        "/summarize",
+        files={"file": ("a.py", b"x = 1\n")},
+        data={"temperature": "3"},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 422
