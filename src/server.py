@@ -16,7 +16,7 @@ from .models.embedding import SentenceTransformerWrapper
 from .models.summarization import SummarizationModelWrapper
 
 # Import routers
-from .routers import amr, ast_parser, corpus, embed, summarize
+from .routers import amr, ast_parser, corpus, embed, judge, summarize
 from .util.body_limit import BodyLimit
 
 # Configure logging with explicit format to ensure visibility
@@ -99,8 +99,10 @@ async def lifespan(app: fastapi.FastAPI):
         summarization_wrapper = SummarizationModelWrapper()
         summarization_wrapper.load_model()
         summarize.summarization_model_wrapper = summarization_wrapper
+        judge.summarization_model_wrapper = summarization_wrapper
     else:
         summarize.summarization_model_wrapper = None
+        judge.summarization_model_wrapper = None
 
     yield
 
@@ -146,6 +148,10 @@ async def rate_limits():
         "summarize": {
             "calls": settings.SUMMARIZE_RATE_LIMIT_CALLS,
             "seconds": settings.SUMMARIZE_RATE_LIMIT_SECONDS,
+        },
+        "judge": {
+            "calls": settings.JUDGE_RATE_LIMIT_CALLS,
+            "seconds": settings.JUDGE_RATE_LIMIT_SECONDS,
         },
     }
 
@@ -245,6 +251,9 @@ app.include_router(amr.router, dependencies=[Depends(get_api_key)])
 
 # Summarization router
 app.include_router(summarize.router, dependencies=[Depends(get_api_key)])
+
+# Judgment router: the summarization model, no persona, a schema-held answer
+app.include_router(judge.router, dependencies=[Depends(get_api_key)])
 
 # AST parser router
 app.include_router(ast_parser.router, dependencies=[Depends(get_api_key)])

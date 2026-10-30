@@ -1,14 +1,16 @@
+import json
 import logging
 import os
 import re
 import threading
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
 from ..config import settings
 from ..util.content_cache import ContentCache
+from .judge_schema import answer_violations, judge_grammar
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,16 @@ _TEMPLATE_TOKENS = 64
 
 class SummaryInputTooLong(ValueError):
     """The file and its persona leave the summary no room in the context."""
+
+
+class Judgment(NamedTuple):
+    text: str
+    answer: Any  # the text read as JSON, or None when it is not JSON
+    truncated: bool  # max_tokens ended the answer, not the model
+    input_tokens: int
+    output_tokens: int
+    valid: bool  # the answer is JSON and meets the whole schema
+    violations: list[dict[str, str]]  # where it does not: {"path", "message"}
 
 
 class Summary(NamedTuple):
@@ -165,3 +177,66 @@ class SummarizationModelWrapper:
             )
             self.cache.put(key, summary)
         return summary
+
+    def judge(
+        self,
+        instructions: str,
+        text: str,
+        schema: dict,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Judgment:
+        """One reading of `text` under `instructions`, answered to `schema`.
+
+        No persona and no cache: each call is a new sample.
+        """
+        if self.model is None:
+            raise RuntimeError("Summarization model not loaded")
+        grammar = judge_grammar(schema)
+        final_max_tokens = (
+            max_tokens if max_tokens is not None else settings.JUDGE_MAX_TOKENS
+        )
+        final_temperature = (
+            temperature if temperature is not None else settings.JUDGE_TEMP
+        )
+        messages = [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": text},
+        ]
+        with self._inference_lock:
+            prompt_tokens = _TEMPLATE_TOKENS + sum(
+                len(self.model.tokenize(m["content"].encode("utf-8"), add_bos=False))
+                for m in messages
+            )
+            context = self.model.n_ctx()
+            if prompt_tokens + final_max_tokens > context:
+                raise SummaryInputTooLong(
+                    f"The instructions and text need about {prompt_tokens} tokens "
+                    f"and the answer up to {final_max_tokens}; the context holds "
+                    f"{context}."
+                )
+            response = self.model.create_chat_completion(
+                messages=messages,
+                temperature=final_temperature,
+                max_tokens=final_max_tokens,
+                grammar=grammar,
+            )
+        choice = response["choices"][0]
+        content = choice["message"]["content"] or ""
+        try:
+            answer = json.loads(content)
+        except ValueError:
+            answer = None
+            violations = [{"path": "", "message": "The answer is not JSON."}]
+        else:
+            violations = answer_violations(schema, answer)
+        usage = response.get("usage") or {}
+        return Judgment(
+            content,
+            answer,
+            choice.get("finish_reason") == "length",
+            int(usage.get("prompt_tokens", 0)),
+            int(usage.get("completion_tokens", 0)),
+            not violations,
+            violations,
+        )

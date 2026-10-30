@@ -32,6 +32,19 @@ class Settings(BaseSettings):
     SUMMARY_MAX_TOKEN: int = 512
     SUMMARY_TEMP: float = 0.7
     SUMMARY_N_CTX: int = 32768
+    # /judge reads a text under the caller's instruction with the same Gemma
+    # model, no persona, and answers to the caller's JSON schema.
+    JUDGE_MAX_TOKENS: int = 1024
+    JUDGE_TEMP: float = 0.7
+    JUDGE_MAX_INPUT_CHARS: int = 200_000
+    JUDGE_MAX_SCHEMA_DEPTH: int = 32
+    # A schema's grammar costs more than its size: 800 optional properties take a
+    # quarter of a second to convert, and each unit of a length or count bound
+    # (maxLength, minItems, a pattern's {m,n}) is one more level or symbol in it.
+    JUDGE_MAX_SCHEMA_BYTES: int = 64 * 1024
+    JUDGE_MAX_SCHEMA_PROPERTIES: int = 256  # per object
+    JUDGE_MAX_SCHEMA_REPEAT: int = 1000  # per bound
+    JUDGE_MAX_SCHEMA_REPEAT_TOTAL: int = 10_000  # all bounds together
     MAX_FILE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
     # A JSON request body; uploads are limited by MAX_FILE_SIZE_BYTES instead.
     MAX_REQUEST_BYTES: int = 16 * 1024 * 1024
@@ -41,6 +54,8 @@ class Settings(BaseSettings):
     EMBED_RATE_LIMIT_CALLS: int = 5
     SUMMARIZE_RATE_LIMIT_SECONDS: int = 60
     SUMMARIZE_RATE_LIMIT_CALLS: int = 2
+    JUDGE_RATE_LIMIT_SECONDS: int = 60
+    JUDGE_RATE_LIMIT_CALLS: int = 60
     FORCE_CPU: bool = False
     EXTENSION_TO_LANGUAGE: dict[str, str] = {
         "py": "Python",
