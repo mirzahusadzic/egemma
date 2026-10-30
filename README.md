@@ -16,8 +16,11 @@ API.
 | Summarization | Gemma 4 26B A4B (QAT Q4_0, llama.cpp) | `/summarize` |
 | Python structure | the standard library's `ast` | `/parse-ast` |
 
-Endpoints require a bearer key, and the model endpoints are rate-limited per
-client. The [API reference](docs/api.md) documents every request and response.
+Every endpoint but `/rate-limits` and the docs requires a bearer key; `/health`
+answers without one, but shows model detail only with it. Request bodies are
+limited before they are read, and the embedding, AMR and summarization endpoints
+are rate-limited per client. The [API reference](docs/api.md) documents every
+request and response.
 
 ## Quick start
 
@@ -46,8 +49,8 @@ uv run uvicorn src.server:app --host localhost --port 8000
 ```
 
 The first start downloads about 17 GB of pinned checkpoints. Then open the
-[interactive docs](http://localhost:8000/docs), or check `/health` for each
-model's revision and status.
+[interactive docs](http://localhost:8000/docs), or check `/health` (with the key)
+for each model's revision and status.
 
 ## Models and memory
 
@@ -96,9 +99,10 @@ curl -sS http://localhost:8000/summarize \
 ```
 
 **Embeddings.** `/embed/texts` embeds whole texts. `/embed/tokens` reads a word
-in its sentence: the model's state at a character span. EmbeddingGemma reads
-2,048 tokens: `/embed/texts` truncates past that, and `/embed/tokens` refuses the
-text. Split longer inputs.
+in its sentence: the model's state at a character span, as JSON numbers or
+compact base64 float32. EmbeddingGemma reads 2,048 tokens: `/embed/texts`
+truncates past that, while `/embed` and `/embed/tokens` refuse the text. Split
+longer inputs.
 
 **Corpus transformer.** `/corpus/gpt` trains a small network on your sentences
 alone and returns its vectors for the words you name. Since it knows nothing
@@ -181,9 +185,10 @@ graph). Inputs over 400 source tokens are never silently truncated. Graphs are l
 their use.
 
 **Summarization.** Personas are editable system prompts in
-[`personas/`](personas/README.md). Log files are condensed before summarizing.
-The response says `"truncated": true` when the token limit, not the model, ended
-the summary.
+[`personas/`](personas/README.md); an edit takes effect on the next request. Log
+files are condensed before summarizing. The response names the persona and model
+used, and says `"truncated": true` when the token limit, not the model, ended the
+summary.
 
 ## Configuration
 
@@ -195,6 +200,8 @@ environment; restart the server after changing them.
 | `SUMMARY_N_CTX` | `32768` tokens |
 | `SUMMARY_MAX_TOKEN` | `512` |
 | `MAX_FILE_SIZE_BYTES` | `5242880` (5 MB) per upload |
+| `MAX_REQUEST_BYTES` | `16777216` (16 MiB) per JSON body |
+| `EMBED_TOKENS_MAX_VECTORS` | `8192` per `/embed/tokens` request |
 | `AMRBART_MAX_SOURCE_TOKENS` | `400`, including boundary tokens |
 | `AMRBART_MAX_GRAPH_TOKENS` | `1024` |
 | `AMRBART_BATCH_MAX_INPUTS` | `64` |

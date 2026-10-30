@@ -53,6 +53,9 @@ example, is kept as written; doubled braces (`{{`, `}}`) stand for single ones.
 3. Remove personas you don't want
 4. Version control your changes
 
+An edit takes effect on the next request, without a restart. Each summary names
+the persona file it used, so a fallback to `default.md` is visible.
+
 **No approval needed. No "official" version to follow.**
 
 ## Security and Ethics
