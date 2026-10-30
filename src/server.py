@@ -39,6 +39,14 @@ logger.debug("=" * 80)
 
 # Define security scheme
 security = HTTPBearer()
+# For /health, which answers everyone but shows its detail only with the key.
+optional_security = HTTPBearer(auto_error=False)
+
+
+def _key_matches(key: str) -> bool:
+    return settings.WORKBENCH_API_KEY is not None and secrets.compare_digest(
+        key.encode(), settings.WORKBENCH_API_KEY.encode()
+    )
 
 
 async def get_api_key(
@@ -49,9 +57,7 @@ async def get_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Server configuration error: API key not set.",
         )
-    if not secrets.compare_digest(
-        credentials.credentials.encode(), settings.WORKBENCH_API_KEY.encode()
-    ):
+    if not _key_matches(credentials.credentials):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API Key",
@@ -145,12 +151,16 @@ async def rate_limits():
 
 
 @app.get("/health", summary="Health Check", tags=["Monitoring"])
-async def health_check():
+async def health_check(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(optional_security)
+    ],
+):
     """
-    Checks if the server and models are running.
+    "ok" when every model switched on is loaded, else "degraded" (HTTP 503). With the
+    bearer key, each model's name, revision and state too.
     """
-
-    response = {"status": "ok"}
+    models = {}
 
     # Check embedding model
     embedding_status = {
@@ -163,10 +173,10 @@ async def health_check():
             else "not_loaded"
         ),
     }
-    response["embedding_model"] = embedding_status
+    models["embedding_model"] = embedding_status
 
     if settings.SUMMARY_MODEL_ENABLED:
-        response["summarization_model"] = {
+        models["summarization_model"] = {
             "name": settings.SUMMARY_MODEL_NAME,
             "basename": settings.SUMMARY_MODEL_BASENAME,
             "revision": settings.SUMMARY_MODEL_REVISION,
@@ -178,10 +188,10 @@ async def health_check():
             ),
         }
     else:
-        response["summarization_model"] = {"status": "disabled"}
+        models["summarization_model"] = {"status": "disabled"}
 
     if settings.AMRBART_MODEL_ENABLED:
-        response["amrbart_model"] = {
+        models["amrbart_model"] = {
             "name": settings.AMRBART_MODEL_NAME,
             "revision": settings.AMRBART_MODEL_REVISION,
             "status": (
@@ -196,9 +206,16 @@ async def health_check():
             ),
         }
     else:
-        response["amrbart_model"] = {"status": "disabled"}
+        models["amrbart_model"] = {"status": "disabled"}
 
-    return fastapi.responses.JSONResponse(content=response)
+    healthy = all(
+        model["status"] in ("loaded", "disabled") for model in models.values()
+    )
+    response = {"status": "ok" if healthy else "degraded"}
+    if credentials is not None and _key_matches(credentials.credentials):
+        response.update(models)
+    code = status.HTTP_200_OK if healthy else status.HTTP_503_SERVICE_UNAVAILABLE
+    return fastapi.responses.JSONResponse(content=response, status_code=code)
 
 
 async def swagger_ui_html(

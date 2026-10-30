@@ -577,7 +577,9 @@ def test_lifespan_skips_disabled_models():
     ):
         embedding.return_value.model = MagicMock()
         with TestClient(app) as client:
-            health = client.get("/health").json()
+            health = client.get(
+                "/health", headers={"Authorization": "Bearer test-key"}
+            ).json()
 
     embedding.return_value.load_model.assert_called_once_with()
     parser.assert_not_called()
@@ -607,3 +609,31 @@ def test_an_amr_server_fault_does_not_reach_the_caller():
     for response in responses:
         assert response.status_code == 500
         assert "SECRET" not in response.text and "server log" in response.text
+
+
+def _health(key=None):
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    return TestClient(app).get("/health", headers=headers)
+
+
+def test_health_without_the_key_tells_only_the_status(monkeypatch):
+    monkeypatch.setattr(settings, "AMRBART_MODEL_ENABLED", False)
+    monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", False)
+    monkeypatch.setattr(embed, "embedding_model_wrapper", MagicMock())
+    for key in (None, "wrong"):
+        response = _health(key)
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+    detailed = _health("test-key").json()
+    assert detailed["embedding_model"]["revision"] == settings.EMBEDDING_MODEL_REVISION
+
+
+def test_health_is_degraded_when_a_model_switched_on_is_not_loaded(monkeypatch):
+    monkeypatch.setattr(settings, "AMRBART_MODEL_ENABLED", True)
+    monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", False)
+    monkeypatch.setattr(embed, "embedding_model_wrapper", MagicMock())
+    monkeypatch.setattr(amr, "amrbart_model_wrapper", None)
+    response = _health("test-key")
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["amrbart_model"]["status"] == "not_loaded"
