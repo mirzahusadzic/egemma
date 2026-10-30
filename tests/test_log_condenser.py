@@ -76,9 +76,7 @@ def test_condense_log_no_timestamp():
         "INFO: Message without timestamp\n"
         "INFO: Message without timestamp"
     )
-    expected_output = (
-        "(Repeated 3 times between None and None)\nINFO: Message without timestamp"
-    )
+    expected_output = "(Repeated 3 times)\nINFO: Message without timestamp"
     assert condense_log(log_content, repetition_threshold=2) == expected_output
 
 
@@ -173,4 +171,14 @@ def test_condense_log_collapses_in_place():
         "2026-01-01 08:00:03,002)",
         "2026-01-01 08:00:01,002 WARN retry",
         "2026-01-01 08:00:05,003 INFO ready",
+    ]
+
+
+def test_condense_log_keeps_levels_apart():
+    """[INFO] and [ERROR] are not timestamps: an ERROR is never folded into INFOs."""
+    log_content = "\n".join(["[INFO] disk full"] * 5 + ["[ERROR] disk full"])
+    assert condense_log(log_content, repetition_threshold=5).split("\n") == [
+        "(Repeated 5 times)",
+        "[INFO] disk full",
+        "[ERROR] disk full",
     ]

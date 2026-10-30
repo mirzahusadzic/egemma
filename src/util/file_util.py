@@ -1,6 +1,11 @@
+import re
+
 from fastapi import HTTPException, UploadFile, status
 
 from ..config import settings
+
+# Terminal colour and cursor sequences (ESC [ ... letter), as coloured logs carry.
+_ANSI_ESCAPE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 async def read_upload(file: UploadFile) -> bytes:
@@ -44,10 +49,12 @@ def is_likely_binary(
         return True
 
     # Check for excessive control characters (excluding common text control chars)
-    # Common text control chars: \n (10), \r (13), \t (9), form feed (12)
+    # Common text control chars: \n (10), \r (13), \t (9), form feed (12). Colour
+    # sequences are text too: a short coloured log is mostly escapes.
     allowed_control_chars = {9, 10, 12, 13}
+    text_bytes = _ANSI_ESCAPE.sub(b"", content_bytes)
     control_chars = sum(
-        1 for byte in content_bytes if byte < 32 and byte not in allowed_control_chars
+        1 for byte in text_bytes if byte < 32 and byte not in allowed_control_chars
     )
 
-    return (control_chars / len(content_bytes)) > threshold
+    return (control_chars / max(len(text_bytes), 1)) > threshold

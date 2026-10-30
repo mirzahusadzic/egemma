@@ -1,9 +1,10 @@
 import re
 
 # A leading timestamp: bracketed ("[2023-01-01 10:00:01] ...") or ISO 8601
-# ("2026-01-01T10:00:01.123Z ...", "2026-01-01 10:00:01,123 ...").
+# ("2026-01-01T10:00:01.123Z ...", "2026-01-01 10:00:01,123 ..."). A bracket counts
+# only if it starts with a digit, so "[INFO]" or "[ERROR]" stays part of the line.
 _TIMESTAMP = re.compile(
-    r"^(?:\[(?P<bracketed>[^]]*)\]"
+    r"^(?:\[(?P<bracketed>\d[^]]*)\]"
     r"|(?P<iso>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?"
     r"(?:Z|[+-]\d{2}:?\d{2})?))"
 )
@@ -18,7 +19,7 @@ def condense_log(log_content: str, repetition_threshold: int = 5) -> str:
     `repetition_threshold` times is replaced, where it first occurs, by a summary
     line giving the count and the time range, followed by its first occurrence; its
     later occurrences are dropped. Every other line keeps its place, so the log
-    stays in order.
+    stays in order. Lines stamped in different styles are counted apart.
 
     Args:
         log_content: The full content of the log file as a string.
@@ -55,10 +56,13 @@ def condense_log(log_content: str, repetition_threshold: int = 5) -> str:
             condensed_lines.append(line)
         elif key not in collapsed:
             collapsed.add(key)
-            condensed_lines.append(
-                f"(Repeated {len(occurrences)} times between "
-                f"{occurrences[0]} and {occurrences[-1]})"
-            )
+            if occurrences[0] is None:
+                condensed_lines.append(f"(Repeated {len(occurrences)} times)")
+            else:
+                condensed_lines.append(
+                    f"(Repeated {len(occurrences)} times between "
+                    f"{occurrences[0]} and {occurrences[-1]})"
+                )
             condensed_lines.append(line)
 
     return "\n".join(condensed_lines)
