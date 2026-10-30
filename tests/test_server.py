@@ -4,13 +4,11 @@ import numpy as np
 import pytest
 
 # Set a dummy API key for testing
-from fastapi import Request
 from fastapi.testclient import TestClient
 
 from src.models.summarization import Summary, SummaryInputTooLong
 from src.routers.embed import EmbeddingDimensions
 from src.server import app, get_api_key, settings
-from src.util.rate_limiter import get_in_memory_rate_limiter
 
 
 @pytest.fixture(autouse=True)
@@ -32,21 +30,9 @@ def mock_api_key_dependency():
 
 @pytest.fixture
 def client(monkeypatch):
-    """Provides a TestClient with mocked models and disabled rate limiting."""
+    """Provides a TestClient with mocked models. Rate-limit budgets start empty
+    in each test (clear_rate_limiter_state)."""
     monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", True)
-
-    async def allow_all_requests(request: Request):
-        pass
-
-    # Store original dependency to restore it later
-    original_get_in_memory_rate_limiter = app.dependency_overrides.get(
-        get_in_memory_rate_limiter
-    )
-
-    # Override the factory function itself
-    app.dependency_overrides[get_in_memory_rate_limiter] = (
-        lambda *args, **kwargs: allow_all_requests
-    )
 
     # Mock the model wrapper classes and their methods
     with (
@@ -71,14 +57,6 @@ def client(monkeypatch):
         with TestClient(app) as c:
             yield c
 
-    # Restore original dependency after the test
-    if original_get_in_memory_rate_limiter:
-        app.dependency_overrides[get_in_memory_rate_limiter] = (
-            original_get_in_memory_rate_limiter
-        )
-    else:
-        del app.dependency_overrides[get_in_memory_rate_limiter]
-
 
 @pytest.fixture
 def caching_test_client(monkeypatch):
@@ -87,19 +65,6 @@ def caching_test_client(monkeypatch):
     but the expensive model calls are mocked.
     """
     monkeypatch.setattr(settings, "SUMMARY_MODEL_ENABLED", True)
-
-    async def allow_all_requests(request: Request):
-        pass
-
-    # Store original dependency to restore it later
-    original_get_in_memory_rate_limiter = app.dependency_overrides.get(
-        get_in_memory_rate_limiter
-    )
-
-    # Override the factory function itself
-    app.dependency_overrides[get_in_memory_rate_limiter] = (
-        lambda *args, **kwargs: allow_all_requests
-    )
 
     with (
         patch("src.server.SentenceTransformerWrapper") as MockEmbeddingWrapper,
@@ -126,14 +91,6 @@ def caching_test_client(monkeypatch):
 
         with TestClient(app) as c:
             yield c, mock_llama_instance.create_chat_completion
-
-    # Restore original dependency after the test
-    if original_get_in_memory_rate_limiter:
-        app.dependency_overrides[get_in_memory_rate_limiter] = (
-            original_get_in_memory_rate_limiter
-        )
-    else:
-        del app.dependency_overrides[get_in_memory_rate_limiter]
 
 
 def test_read_root_redirect(client):
