@@ -14,6 +14,7 @@
 | [Corpus transformer](#corpus-transformer) | `/corpus/gpt` | nanoGPT-design network trained per request |
 | [AMR](#abstract-meaning-representation) | `/amr/parse`, `/amr/parse-batch` | AMRBART |
 | [Summarization](#summarization) | `/summarize` | Gemma 4 |
+| [Judgment](#judgment) | `/judge` | Gemma 4 |
 | [AST parsing](#ast-parsing) | `/parse-ast` | none (Python `ast`) |
 | [Monitoring](#monitoring) | `/health`, `/rate-limits` | |
 
@@ -365,6 +366,110 @@ token counts. Uploads past 5 MB also return 413, and binary files 400.
 
 ---
 
+## Judgment
+
+### POST /judge
+
+Read a text under the caller's instructions with the local Gemma 4 model, and
+answer to the caller's JSON schema. Loaded with the summarization model
+(`SUMMARY_MODEL_ENABLED=true`, the default); otherwise returns HTTP 503. No
+persona is added: `instructions` is the whole system message and `input` the user
+turn. A grammar built from `schema` holds the answer's shape, and the answer is
+then validated against the whole schema: `valid` says whether it meets it.
+
+| JSON field | Default | Description |
+| --- | --- | --- |
+| `instructions` | required | The system message, 1 to 200,000 characters (`JUDGE_MAX_INPUT_CHARS`) |
+| `input` | required | The text to read, 1 to 200,000 characters |
+| `schema` | required | The JSON schema of the answer, an object |
+| `max_tokens` | 1024 | Maximum answer tokens, 1 to `JUDGE_MAX_TOKENS` (1024) |
+| `temperature` | 0.7 | Sampling temperature, 0 to 2 (`JUDGE_TEMP`) |
+
+Any other field is refused with HTTP 422.
+
+```bash
+curl -X POST "http://localhost:8000/judge" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"instructions": "Classify the log line by severity.",
+       "input": "disk /dev/sda1 is 97% full",
+       "schema": {"type": "object", "required": ["severity"], "additionalProperties": false,
+                  "properties": {"severity": {"type": "string", "enum": ["info", "warning", "error"]}}},
+       "temperature": 0}'
+```
+
+```json
+{
+  "answer": {"severity": "warning"},
+  "text": "{ \"severity\": \"warning\"}",
+  "truncated": false,
+  "valid": true,
+  "violations": [],
+  "usage": {"input_tokens": 38, "output_tokens": 8},
+  "model": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+  "revision": "d1c082be9cf3c8a514acf63b8761f4b41935842e"
+}
+```
+
+| Response field | Description |
+| --- | --- |
+| `answer` | The answer read as JSON, or `null` when it is not JSON |
+| `text` | The answer as the model wrote it |
+| `truncated` | True when `max_tokens` ended the answer rather than the model |
+| `valid` | True when the answer is JSON and meets the whole schema |
+| `violations` | Where it does not: up to 20 of `{"path", "message"}`, `path` a JSON pointer into the answer (`""` for the whole) |
+| `usage` | `input_tokens` (the chat template's included) and `output_tokens` |
+| `model`, `revision` | The Gemma checkpoint and its pinned revision |
+
+The grammar holds the answer's types, `enum` and `const`, `properties` and
+`required`, `items`, `anyOf`, `pattern`, and length and count bounds (an
+array's when it has `items`); an object gets only its listed properties unless
+`additionalProperties` allows more. It does not hold `minimum`, `maximum`,
+`exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `uniqueItems`,
+`minProperties`, `maxProperties`, `dependentRequired`, or `oneOf`'s "exactly
+one": those are left to validation. So an answer can be well-formed JSON yet
+break the schema; it is returned as it is, with `valid` false and the
+violations, and nothing is retried. For a bounded integer the grammar holds, use
+an `enum` of its values. Formats are not validated.
+
+An answer cut short is usually not JSON: `answer` is then `null`, `truncated`
+true, and the one violation says the answer is not JSON. A schema that allows
+`null` can also make `null` the answer itself; `text` and `valid` tell the two
+apart. Nothing is cached, so each call is a new sample; at `temperature` 0 the
+answer is close to deterministic.
+
+The schema is checked before the request is admitted, and HTTP 422 names what is
+wrong with one /judge does not take:
+
+- not valid JSON Schema (an invalid `pattern` included), or one the grammar
+  converter cannot turn into a grammar;
+- a `$ref` that points outside the schema (`#...` only), so nothing is ever
+  fetched: llama-cpp-python's converter refuses an https reference only by an
+  assertion, which `python -O` removes;
+- nested deeper than `JUDGE_MAX_SCHEMA_DEPTH` (32), larger than
+  `JUDGE_MAX_SCHEMA_BYTES` (64 KiB), or an object with more than
+  `JUDGE_MAX_SCHEMA_PROPERTIES` (256) properties;
+- a `minLength`, `maxLength`, `minItems`, `maxItems` or a pattern's `{m,n}` past
+  `JUDGE_MAX_SCHEMA_REPEAT` (1,000), or all of them together past
+  `JUDGE_MAX_SCHEMA_REPEAT_TOTAL` (10,000): each unit is one more level of the
+  grammar, and llama.cpp's grammar parser recurses once per level;
+- `patternProperties` or `propertyNames`: the grammar cannot hold them, and
+  validating them would run the caller's patterns where they cannot be stopped.
+  A `pattern` is validated within a shared half-second budget; one too slow to
+  check is reported as a violation.
+
+The instructions and input, plus `max_tokens` for the answer, must fit the
+model's context (`SUMMARY_N_CTX`); otherwise the request is refused with HTTP 413
+and the token counts. One judgment runs at a time and two more may wait; a
+request beyond that returns HTTP 503 with `Retry-After: 10`. The model, its
+context and its lock are shared with `/summarize`, whose requests are not
+counted by this admission (they are bounded by their own rate limit), so an
+admitted judgment can also wait behind summaries. The route allows
+`JUDGE_RATE_LIMIT_CALLS` (60) calls per `JUDGE_RATE_LIMIT_SECONDS` (60) per
+client, as `/rate-limits` reports; past that, HTTP 429.
+
+---
+
 ## AST Parsing
 
 ### POST /parse-ast
@@ -525,7 +630,8 @@ curl "http://localhost:8000/rate-limits"
 {
   "embed": {"calls": 5, "seconds": 10},
   "amr": {"calls": 10, "seconds": 60},
-  "summarize": {"calls": 2, "seconds": 60}
+  "summarize": {"calls": 2, "seconds": 60},
+  "judge": {"calls": 60, "seconds": 60}
 }
 ```
 
@@ -544,12 +650,12 @@ training and two waiting, and the second runs no model.
 | 400 | Bad request: a binary upload (`/embed`, `/summarize`), a non-UTF-8 one, an unsupported language, or Python that cannot be parsed |
 | 401 | Invalid API key |
 | 403 | Missing or malformed bearer credentials |
-| 413 | A request body or upload past its limit, or a file too long for the summarizer's context |
-| 422 | Request validation failed |
+| 413 | A request body or upload past its limit, or a file (`/summarize`) or instructions and input (`/judge`) too long for the model's context |
+| 422 | Request validation failed, or a schema `/judge` cannot hold its answer to |
 | 429 | Too many requests (rate limit exceeded) |
 | 499 | The client disconnected before the answer (`/amr/parse-batch`, `/corpus/gpt`) |
 | 500 | A server fault; the detail says what failed, and the server log has the rest |
-| 503 | A model not loaded (switched off in configuration), `/health` degraded, or `/corpus/gpt` full |
+| 503 | A model not loaded (switched off in configuration), `/health` degraded, or `/corpus/gpt` or `/judge` full (with `Retry-After`) |
 
 ```json
 {

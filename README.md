@@ -1,8 +1,8 @@
 # eGemma
 
 Local inference for embeddings, semantic parsing, corpus-trained transformers,
-and summarization. Every model runs on your machine; nothing is sent to a hosted
-API.
+summarization, and answers held to a JSON schema. Every model runs on your
+machine; nothing is sent to a hosted API.
 
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/mirzahusadzic/egemma/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mirzahusadzic/egemma/actions/workflows/ci.yml)
@@ -14,13 +14,14 @@ API.
 | Corpus transformer | nanoGPT design, trained from scratch per request | `/corpus/gpt` |
 | Semantic parsing | AMRBART | `/amr/parse`, `/amr/parse-batch` |
 | Summarization | Gemma 4 26B A4B (QAT Q4_0, llama.cpp) | `/summarize` |
+| Judgment | the same Gemma 4, with a grammar from the caller's schema | `/judge` |
 | Python structure | the standard library's `ast` | `/parse-ast` |
 
 Every endpoint but `/rate-limits` and the docs requires a bearer key; `/health`
 answers without one, but shows model detail only with it. Request bodies are
-limited before they are read, and the embedding, AMR and summarization endpoints
-are rate-limited per client. The [API reference](docs/api.md) documents every
-request and response.
+limited before they are read, and the embedding, AMR, summarization and
+judgment endpoints are rate-limited per client. The
+[API reference](docs/api.md) documents every request and response.
 
 ## Quick start
 
@@ -59,7 +60,7 @@ Embeddings are always loaded. The other two models can be switched off:
 | Setting | Default | Loads |
 | --- | --- | --- |
 | `AMRBART_MODEL_ENABLED` | `true` | AMRBART for `/amr/*` |
-| `SUMMARY_MODEL_ENABLED` | `true` | Gemma 4 for `/summarize` |
+| `SUMMARY_MODEL_ENABLED` | `true` | Gemma 4 for `/summarize` and `/judge` |
 
 A disabled model's endpoints answer HTTP 503. Measured on an Apple M5 Pro: the
 full set holds about 20 GB after startup (EmbeddingGemma and AMRBART about
@@ -96,6 +97,12 @@ curl -sS http://localhost:8000/amr/parse \
 curl -sS http://localhost:8000/summarize \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -F "file=@src/server.py" -F "persona=developer"
+
+# Classify a log line, the answer held to a JSON schema
+curl -sS http://localhost:8000/judge \
+  -H "Authorization: Bearer $WORKBENCH_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"instructions":"Classify the log line by severity.","input":"disk /dev/sda1 is 97% full","schema":{"type":"object","properties":{"severity":{"type":"string","enum":["info","warning","error"]}},"required":["severity"]}}'
 ```
 
 **Embeddings.** `/embed/texts` embeds whole texts. `/embed/tokens` reads a word
@@ -190,6 +197,15 @@ files are condensed before summarizing. The response names the persona and model
 used, and says `"truncated": true` when the token limit, not the model, ended the
 summary.
 
+**Judgment.** `/judge` reads `input` under `instructions`, which are the whole
+system message: no persona is added. A grammar built from `schema` holds the
+answer's shape, and the answer, parsed in `answer`, is then validated against
+the whole schema: `valid` and `violations` report keywords the grammar cannot
+hold, such as `minimum` and `maximum`. Schemas are bounded in size and in their
+length and count bounds. Nothing is cached, so each call is a new sample
+(`temperature` 0 for a near-deterministic one). One judgment runs at a time and
+two may wait; beyond that the answer is 503 with `Retry-After`.
+
 ## Configuration
 
 Settings live in [`src/config.py`](src/config.py) and are read from `.env` or the
@@ -199,6 +215,9 @@ environment; restart the server after changing them.
 | --- | --- |
 | `SUMMARY_N_CTX` | `32768` tokens |
 | `SUMMARY_MAX_TOKEN` | `512` |
+| `JUDGE_MAX_TOKENS` | `1024` |
+| `JUDGE_MAX_INPUT_CHARS` | `200000` each for instructions and input |
+| `JUDGE_MAX_SCHEMA_BYTES` | `65536` per `/judge` schema |
 | `MAX_FILE_SIZE_BYTES` | `5242880` (5 MB) per upload |
 | `MAX_REQUEST_BYTES` | `16777216` (16 MiB) per JSON body |
 | `EMBED_TOKENS_MAX_VECTORS` | `8192` per `/embed/tokens` request |
@@ -207,9 +226,9 @@ environment; restart the server after changing them.
 | `AMRBART_BATCH_MAX_INPUTS` | `64` |
 | `EMBEDDING_BATCH_MAX_INPUTS` | `256` |
 
-Rate limits apply to the embedding, AMR, and summarization endpoints, per client
-IP, HTTP method, and route, within one process; `/rate-limits` reports them. Run a
-single worker.
+Rate limits apply to the embedding, AMR, summarization, and judgment endpoints,
+per client IP, HTTP method, and route, within one process; `/rate-limits` reports
+them. Run a single worker.
 
 ## Development
 
