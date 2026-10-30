@@ -586,3 +586,24 @@ def test_lifespan_skips_disabled_models():
     assert summarize.summarization_model_wrapper is None
     assert health["amrbart_model"] == {"status": "disabled"}
     assert health["summarization_model"] == {"status": "disabled"}
+
+
+def test_an_amr_server_fault_does_not_reach_the_caller():
+    _client_last_request_time.clear()
+    wrapper = MagicMock()
+    wrapper.is_loaded = True
+    wrapper.parse.side_effect = RuntimeError("SECRET /srv/amr.py")
+    app.dependency_overrides[get_api_key] = lambda: "test-key"
+    amr.amrbart_model_wrapper = wrapper
+    try:
+        client = TestClient(app)
+        responses = [
+            client.post("/amr/parse", json={"text": "test"}),
+            client.post("/amr/parse-batch", json={"texts": ["test"]}),
+        ]
+    finally:
+        app.dependency_overrides.pop(get_api_key, None)
+        amr.amrbart_model_wrapper = None
+    for response in responses:
+        assert response.status_code == 500
+        assert "SECRET" not in response.text and "server log" in response.text

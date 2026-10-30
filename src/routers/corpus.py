@@ -108,9 +108,10 @@ def _start(arguments: dict):
             put(None, None)
         except ValueError as error:
             put("error", {"detail": str(error)})
-        except Exception as error:  # noqa: BLE001 — said to the caller, then logged
+        except Exception:  # noqa: BLE001 — logged here; the caller is told it failed
             logger.exception("The corpus transformer failed")
-            put("failure", {"detail": str(error)})
+            detail = "The corpus transformer failed; the server log has the details."
+            put("failure", {"detail": detail})
         finally:
             _admission.release()
 

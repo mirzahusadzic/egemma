@@ -88,7 +88,7 @@ async def parse_amr(request: AMRParseRequest) -> AMRParseResult:
         logger.exception("AMRBART inference failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AMRBART inference failed: {exc}",
+            detail="AMRBART inference failed; the server log has the details.",
         ) from exc
 
 
@@ -145,5 +145,5 @@ async def parse_amr_batch(
         logger.exception("AMRBART batch inference failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AMRBART batch inference failed: {exc}",
+            detail="AMRBART batch inference failed; the server log has the details.",
         ) from exc

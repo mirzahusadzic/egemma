@@ -146,5 +146,6 @@ async def summarize(
             exc_info=True,
         )
         raise HTTPException(
-            status_code=500, detail=f"An internal server error occurred: {e}"
+            status_code=500,
+            detail="Summarization failed; the server log has the details.",
         ) from e

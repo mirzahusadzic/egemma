@@ -321,7 +321,8 @@ def test_embed_model_not_loaded_error(client, mock_api_key_dependency, tmp_path)
                 headers=headers,
             )
         assert response.status_code == 500, response.text
-        assert "Model not loaded" in response.json()["detail"]
+        assert "server log" in response.json()["detail"]
+        assert "Model not loaded" not in response.text
 
 
 def test_summarize_no_api_key(client, tmp_path):
@@ -395,7 +396,8 @@ def test_summarize_model_not_loaded_error(client, mock_api_key_dependency, tmp_p
                 "/summarize", files={"file": ("test.py", f)}, headers=headers
             )
         assert response.status_code == 500, response.text
-        assert "Model not loaded" in response.json()["detail"]
+        assert "server log" in response.json()["detail"]
+        assert "Model not loaded" not in response.text
 
 
 def test_summarize_disabled(client, mock_api_key_dependency, tmp_path, monkeypatch):
@@ -617,7 +619,8 @@ def test_embed_tokens_reports_a_failure(client, mock_api_key_dependency):
             headers=headers,
         )
     assert response.status_code == 500
-    assert "Model not loaded" in response.json()["detail"]
+    assert "server log" in response.json()["detail"]
+    assert "Model not loaded" not in response.text
 
 
 def test_embed_tokens_needs_a_key(client):
@@ -823,3 +826,42 @@ def test_summarize_bounds_the_temperature(client, mock_api_key_dependency):
         headers={"Authorization": "Bearer test_api_key"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("target", "method", "request_kwargs"),
+    [
+        ("embed", "encode_many", {"json": {"texts": ["a"]}}),
+        ("embed", "encode", {"files": {"file": ("a.txt", b"a text")}}),
+        (
+            "embed",
+            "token_states",
+            {"json": {"items": [{"text": "a text", "spans": [[0, 1]]}]}},
+        ),
+        ("summarize", "summarize", {"files": {"file": ("a.py", b"x = 1")}}),
+    ],
+    ids=["embed/texts", "embed", "embed/tokens", "summarize"],
+)
+def test_a_server_fault_does_not_reach_the_caller(
+    client, mock_api_key_dependency, target, method, request_kwargs
+):
+    import src.routers.embed as embed_router
+    import src.routers.summarize as summarize_router
+
+    wrapper = {
+        "embed": embed_router.embedding_model_wrapper,
+        "summarize": summarize_router.summarization_model_wrapper,
+    }[target]
+    embed_router.encode_cache.clear()
+    path = {
+        "encode_many": "/embed/texts",
+        "encode": "/embed",
+        "token_states": "/embed/tokens",
+        "summarize": "/summarize",
+    }[method]
+    with patch.object(wrapper, method, side_effect=RuntimeError("SECRET /srv/x.py")):
+        response = client.post(
+            path, headers={"Authorization": "Bearer test_api_key"}, **request_kwargs
+        )
+    assert response.status_code == 500
+    assert "SECRET" not in response.text and "server log" in response.text

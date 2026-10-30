@@ -186,7 +186,7 @@ async def embed_texts(request: TextEmbeddingBatchRequest):
         logger.exception("Batch embedding failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Batch embedding failed: {exc}",
+            detail="Batch embedding failed; the server log has the details.",
         ) from exc
 
 
@@ -256,7 +256,7 @@ async def embed(
     except Exception as e:
         logger.error(f"Error during embedding: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"An internal server error occurred: {e}"
+            status_code=500, detail="Embedding failed; the server log has the details."
         ) from e
 
 
@@ -336,5 +336,5 @@ async def embed_tokens(request: TokenStatesRequest):
         logger.exception("Token states failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Token states failed: {exc}",
+            detail="Token states failed; the server log has the details.",
         ) from exc
