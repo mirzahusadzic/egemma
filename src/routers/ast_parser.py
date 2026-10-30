@@ -1,8 +1,10 @@
 import logging
 
 from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 
 from ..util import read_upload
+from ..util.ast_parser import parse_code_to_ast
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,7 +45,10 @@ async def parse_ast(
             status_code=400, detail="The file is not UTF-8 text."
         ) from exc
 
-    from ..util.ast_parser import parse_code_to_ast
-
-    parsed_ast = parse_code_to_ast(code, language)
-    return parsed_ast
+    try:
+        return await run_in_threadpool(parse_code_to_ast, code, language)
+    except RecursionError as exc:
+        # Small inputs can nest past Python's recursion limit (a long a+b+c... chain).
+        raise HTTPException(
+            status_code=400, detail="The code is nested too deeply to parse."
+        ) from exc

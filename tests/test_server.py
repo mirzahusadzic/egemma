@@ -490,7 +490,9 @@ def my_function(param1, param2) -> int:
             {
                 "name": "__init__",
                 "docstring": "",
-                "params": [{"name": "self", "type": "None"}],
+                "params": [
+                    {"name": "self", "type": "None", "kind": "positional_or_keyword"}
+                ],
                 "returns": "None",
                 "decorators": [],
                 "is_async": False,
@@ -503,8 +505,8 @@ def my_function(param1, param2) -> int:
                 "name": "my_method",
                 "docstring": "",
                 "params": [
-                    {"name": "self", "type": "None"},
-                    {"name": "arg1", "type": "int"},
+                    {"name": "self", "type": "None", "kind": "positional_or_keyword"},
+                    {"name": "arg1", "type": "int", "kind": "positional_or_keyword"},
                 ],
                 "returns": "int",
                 "decorators": [],
@@ -523,8 +525,8 @@ def my_function(param1, param2) -> int:
         "name": "my_function",
         "docstring": "A standalone function.",
         "params": [
-            {"name": "param1", "type": "None"},
-            {"name": "param2", "type": "None"},
+            {"name": "param1", "type": "None", "kind": "positional_or_keyword"},
+            {"name": "param2", "type": "None", "kind": "positional_or_keyword"},
         ],
         "returns": "int",
         "decorators": [],
@@ -797,3 +799,14 @@ def test_embed_tokens_bounds_the_vectors_of_one_request(
     )
     assert response.status_code == 422
     assert "asks for 128 vectors; at most 100" in response.text
+
+
+def test_parse_ast_refuses_code_nested_too_deeply(client, mock_api_key_dependency):
+    response = client.post(
+        "/parse-ast",
+        files={"file": ("deep.py", ("x = " + "1+" * 2000 + "1\n").encode())},
+        data={"language": "python"},
+        headers={"Authorization": "Bearer test_api_key"},
+    )
+    assert response.status_code == 400
+    assert "nested too deeply" in response.json()["detail"]
