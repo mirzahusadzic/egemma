@@ -5,6 +5,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
+import src.util.rate_limiter as rate_limiter
 from src.util.rate_limiter import (
     _client_last_request_time,
     get_in_memory_rate_limiter,
@@ -58,3 +59,24 @@ def test_dynamic_route_ids_share_a_budget_but_methods_are_independent():
     assert {key[2] for key in _client_last_request_time} == {
         "/conversations/{conversation_id}"
     }
+
+
+def test_buckets_of_clients_that_have_gone_are_swept(monkeypatch):
+    _client_last_request_time.clear()
+    clock = [1000.0]
+    monkeypatch.setattr(rate_limiter.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rate_limiter, "_next_sweep", 0.0)
+    limiter = get_in_memory_rate_limiter(rate_limit_seconds=60, rate_limit_calls=5)
+
+    def from_client(ip):
+        req = request("/amr/parse")
+        req.scope["client"] = (ip, 5000)
+        return req
+
+    for k in range(200):
+        asyncio.run(limiter(from_client(f"10.0.0.{k}")))
+    assert len(_client_last_request_time) == 200
+
+    clock[0] += rate_limiter._longest_window + rate_limiter._SWEEP_EVERY
+    asyncio.run(limiter(from_client("10.0.1.1")))
+    assert list(_client_last_request_time) == [("10.0.1.1", "POST", "/amr/parse")]
