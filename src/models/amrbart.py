@@ -453,7 +453,14 @@ class AMRBartModelWrapper:
                 do_sample=False,
             )
             elapsed = time.monotonic() - started
-        if elapsed >= settings.AMRBART_MAX_SECONDS:
+        token_ids = generated[0].detach().cpu().tolist()
+        # A finished graph ends with </AMR> (padding aside), whatever the clock says.
+        # Output that has not ended was stopped at the deadline.
+        end = len(token_ids)
+        while end and token_ids[end - 1] == tokenizer.pad_token_id:
+            end -= 1
+        finished = end > 0 and token_ids[end - 1] == amr_eos
+        if not finished and elapsed >= settings.AMRBART_MAX_SECONDS:
             # Stopped at its deadline: whatever the search held then is not the
             # graph it would have returned, so none is.
             return AMRParseResult(
@@ -476,7 +483,6 @@ class AMRBartModelWrapper:
                 ),
             )
 
-        token_ids = generated[0].detach().cpu().tolist()
         linearized = tokenizer.decode(token_ids, skip_special_tokens=False)
         try:
             normalized = pointer_graph_to_penman(linearized)

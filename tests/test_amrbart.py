@@ -637,3 +637,12 @@ def test_health_is_degraded_when_a_model_switched_on_is_not_loaded(monkeypatch):
     assert response.status_code == 503
     assert response.json()["status"] == "degraded"
     assert response.json()["amrbart_model"]["status"] == "not_loaded"
+
+
+def test_a_graph_finished_at_the_deadline_is_kept(parser, monkeypatch):
+    """Output that ends with </AMR> is complete even if the clock reached the limit."""
+    clock = iter([0.0, settings.AMRBART_MAX_SECONDS])
+    monkeypatch.setattr("src.models.amrbart.time.monotonic", lambda: next(clock))
+    result = parser.parse("text")
+    assert result.decode_status == "ok"
+    assert result.penman is not None
