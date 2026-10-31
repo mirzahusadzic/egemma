@@ -16,16 +16,16 @@
 | [Summarization](#summarization) | `/summarize` | Gemma 4 |
 | [Judgment](#judgment) | `/judge` | Gemma 4 |
 | [AST parsing](#ast-parsing) | `/parse-ast` | none (Python `ast`) |
-| [Monitoring](#monitoring) | `/health`, `/rate-limits` | |
+| [Monitoring](#monitoring) | `/health`, `/rate-limits` | none |
 
 ---
 
-## Embeddings
+### Embeddings
 
 All three endpoints use the pinned local EmbeddingGemma revision, which is
 always loaded.
 
-### POST /embed/texts
+#### POST /embed/texts
 
 Embed 1–256 texts in one request. The request selects one supported prompt and
 one Matryoshka dimension (128 by default; 256, 512 or 768 explicitly); the
@@ -43,7 +43,7 @@ must contain 1–16,384 characters by default. The encoder has a 2,048-token
 window, including any task prompt, and may truncate beyond it; split longer
 inputs before embedding when full source coverage is required.
 
-### POST /embed/tokens
+#### POST /embed/tokens
 
 A word read in its sentence. For each character span asked, the response gives
 the mean of EmbeddingGemma's last-layer states over the sub-word tokens the
@@ -75,21 +75,22 @@ curl -X POST "http://localhost:8000/embed/tokens" \
 | `encoding` | `"json"` (default): vectors as JSON numbers. `"base64"`: each vector as its little-endian float32 bytes, base64-encoded (4,096 characters for 768 floats, about a quarter of the JSON) |
 | `items[].vectors` | One vector per span, in order; `null` where the span overlaps no token. Special tokens never count. |
 
-Vectors are the transformer's full-width output before EmbeddingGemma's pooling,
-projection and normalization, so they are not Matryoshka embeddings and are
-not comparable with `/embed/texts` vectors. Each state reads the whole text,
-before and after the span. A request holds 1–256 items, each text 1–16,384
-characters, and asks for at most 8,192 vectors in all (`EMBED_TOKENS_MAX_VECTORS`).
-Out-of-range spans, empty texts and too many vectors return HTTP 422, and so does
-a text longer than the model's 2,048-token window, with its token count; texts
-are never cut.
+- **Vectors:** the transformer's full-width output before EmbeddingGemma's
+  pooling, projection and normalization, so they are not Matryoshka embeddings
+  and are not comparable with `/embed/texts` vectors. Each state reads the whole
+  text, before and after the span.
+- **Limits:** a request holds 1–256 items, each text 1–16,384 characters, and
+  asks for at most 8,192 vectors in all (`EMBED_TOKENS_MAX_VECTORS`).
+- **Errors:** out-of-range spans, empty texts and too many vectors return HTTP
+  422, and so does a text longer than the model's 2,048-token window, with its
+  token count; texts are never cut.
 
 To decode a base64 vector: `numpy.frombuffer(base64.b64decode(v), "<f4")` in
 Python. In Node.js, copy the bytes out of Buffer's shared pool first:
 `const b = Buffer.from(v, "base64"); new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.length))`
 (on a little-endian machine, as nearly all are).
 
-### POST /embed
+#### POST /embed
 
 Embed one uploaded file.
 
@@ -119,9 +120,11 @@ HTTP 413; binary or non-UTF-8 files return HTTP 400.
 
 ---
 
-## Corpus transformer
+### Corpus transformer
 
-### POST /corpus/gpt
+No model is loaded for it: each request trains its own network, on CPU.
+
+#### POST /corpus/gpt
 
 Train a small transformer from scratch on the caller's sentences, then read it
 back. The network follows [nanoGPT](https://github.com/karpathy/nanoGPT)'s
@@ -149,12 +152,12 @@ back, under keys of its choosing:
 | `words` | `{}` | words of at most 256 characters | Key → word: return that word's token-embedding row (the learned weights). A key whose word is absent is omitted. |
 | `positions` | `{}` | at most 200,000 places in all | Key → `[[sentence, word], …]`, zero-based: return the hidden state at each layer at those places, averaged. An out-of-range place returns HTTP 422. |
 | `steps` | 1500 | 1–20,000 | Training steps (batches of up to 32 sentences) |
-| `seed` | 7 | | Seeds initialization and batch order |
+| `seed` | 7 | an integer | Seeds initialization and batch order |
 | `dimensions` | 64 | 8–512 | Width; must divide evenly among `heads` |
 | `layers` | 4 | 1–12 | Transformer blocks |
 | `heads` | 4 | 1–16 | Attention heads |
 | `threads` | 2 | 1–8 | CPU threads for this training |
-| `stream` | true | | Server-sent progress events; `false` returns one JSON document |
+| `stream` | true | true or false | Server-sent progress events; `false` returns one JSON document |
 
 What is read back is bounded too: `dimensions × (words + positions × layers)`
 floats, at most 2,000,000 (about 40 MB of JSON; some 6,000 words and positions
@@ -209,24 +212,29 @@ beyond that gets HTTP 503 with `Retry-After`.
 }
 ```
 
-`layers` has one object per block, first to last. The network is causal: a state
-at a word has seen that word and the ones before it in its sentence, not the ones
-after, unlike `/embed/tokens`, which reads the whole text. Vectors are raw, in this
-network's own space: compare them within one result, not across trainings or
-with EmbeddingGemma vectors directly. To set two sources side by side, compare
-their geometry instead, for example each word's nearest neighbours or the rank
-correlation of all pairwise similarities. States at one layer tend to share a
-common direction, so centre them (subtract the mean over keys) before comparing
-by cosine.
+- **Layers:** `layers` has one object per block, first to last. The network is
+  causal: a state at a word has seen that word and the ones before it in its
+  sentence, not the ones after, unlike `/embed/tokens`, which reads the whole
+  text.
+- **Comparing:** vectors are raw, in this network's own space: compare them
+  within one result, not across trainings or with EmbeddingGemma vectors
+  directly. To set two sources side by side, compare their geometry instead, for
+  example each word's nearest neighbours or the rank correlation of all pairwise
+  similarities.
+- **Centring:** states at one layer tend to share a common direction, so centre
+  them (subtract the mean over keys) before comparing by cosine.
 
 **Reading it.** On small corpora the parts of the network tend to say different
-things. `wte` mostly reflects which words are *said together*. Deeper layers'
-states move toward which words *share roles*, the places one word could stand
-in for another. Fitting a small corpus is the point, but the role structure
-tends to appear early and then give way to memorized co-occurrence. So treat
-`steps` as a setting to compare, not a bigger-is-better budget, and repeat over
-a few seeds before trusting a difference. Corpus size is the real limit: a few
-thousand tokens give a weak signal.
+things:
+
+- **`wte`** mostly reflects which words are *said together*.
+- **Deeper layers'** states move toward which words *share roles*, the places one
+  word could stand in for another.
+- **Steps:** fitting a small corpus is the point, but the role structure tends
+  to appear early and then give way to memorized co-occurrence. So treat `steps`
+  as a setting to compare, not a bigger-is-better budget, and repeat over a few
+  seeds before trusting a difference.
+- **Corpus size** is the real limit: a few thousand tokens give a weak signal.
 
 Training runs on CPU, one network at a time; a concurrent request waits for the
 running one. A few thousand words take about half a minute on two threads.
@@ -234,12 +242,12 @@ Nothing is written to disk: the corpus and the network live for one request.
 
 ---
 
-## Abstract Meaning Representation
+### Abstract Meaning Representation
 
 Loaded when `AMRBART_MODEL_ENABLED=true` (the default); otherwise both
 endpoints return HTTP 503.
 
-### POST /amr/parse
+#### POST /amr/parse
 
 Parse natural-language text into an attributed AMRBART candidate graph.
 
@@ -267,8 +275,8 @@ The response contains:
 | `decode_status`, `decode_error` | Mechanical decoding result |
 
 The endpoint does not claim that the graph is factually true, source-aligned,
-or authorized. It exposes one learned semantic parse for downstream inspection.
-JSON escapes newlines inside both formatted graph strings. Use
+or authorized; it exposes one learned semantic parse for downstream inspection.
+JSON escapes newlines inside both formatted graph strings, so use
 `jq -r '.linearized'` or `jq -r '.penman'` to print their indentation.
 
 Decoding uses PENMAN's AMR model. Lexical roles such as `:consist-of` and
@@ -277,7 +285,7 @@ decoded as reversed `:ARG0` edges. The full output must contain one complete
 graph with concepts and relation targets. eGemma does not repair missing
 structure or apply downstream semantic canonicalization.
 
-### POST /amr/parse-batch
+#### POST /amr/parse-batch
 
 Parse a bounded batch sequentially, returning the same result schema for each
 input in its original order:
@@ -298,12 +306,13 @@ Both AMR endpoints return HTTP 200 for these per-input results:
 | `input_too_long` | The complete source exceeds the token budget. Inference is skipped; graph strings are empty, `penman` and `top` are `null`, and triples/fragments and output tokens are empty/zero. `decode_error` states the count and limit. |
 | `timed_out` | Generation reached its deadline (`AMRBART_MAX_SECONDS`, 45 s by default). What the search held then is not the graph it would have returned, so none is kept: the fields are empty as for `input_too_long`, and `decode_error` states the deadline. |
 
-The default limits are 1–64 inputs per batch, 1–16,384 characters per input,
-400 source tokens, and 1,024 generated tokens. Source tokens include the text
-boundaries and the three appended graph tokens:
-`<s> text </s> <AMR> <mask> </AMR>`. The source is never silently truncated;
-split long inputs explicitly. The character bound is a separate request limit,
-not a guarantee that the text fits the tokenizer budget.
+- **Defaults:** 1–64 inputs per batch, 1–16,384 characters per input, 400
+  source tokens, and 1,024 generated tokens.
+- **Source tokens** include the text boundaries and the three appended graph
+  tokens: `<s> text </s> <AMR> <mask> </AMR>`. The source is never silently
+  truncated; split long inputs explicitly.
+- **The character bound** is a separate request limit, not a guarantee that the
+  text fits the tokenizer budget.
 
 An invalid batch shape or character bound returns HTTP 422 for the request.
 Invalid graphs and token-overflow results do not discard other batch items;
@@ -316,13 +325,15 @@ has not ended by the deadline is `timed_out`.
 
 ---
 
-## Summarization
+### Summarization
 
-### POST /summarize
+Loaded when `SUMMARY_MODEL_ENABLED=true` (the default); otherwise `/summarize`
+returns HTTP 503.
+
+#### POST /summarize
 
 Summarize a code, Markdown, or log file with the local Gemma 4 model and a
-[persona](../personas/README.md). Loaded when `SUMMARY_MODEL_ENABLED=true` (the
-default); otherwise returns HTTP 503.
+[persona](../personas/README.md).
 
 The language comes from the file name: `.md`, `.markdown`, `.mkd` and `.mdx` are
 Markdown and use the `docs/` personas; `.log` files, rotated ones such as
@@ -355,27 +366,32 @@ curl -X POST "http://localhost:8000/summarize" \
 }
 ```
 
-`persona` is the persona file used: a name with no file falls back to its folder's
-`default`, and the response says so. `truncated` is true when `max_tokens` ended
-the summary rather than the model. Summaries are cached under a hash of the whole
-prompt (persona text included), `max_tokens` and `temperature`, so an edited
-persona takes effect at once and an identical request returns the same summary. The file and its persona,
-plus `max_tokens` for the summary, must fit the model's context (`SUMMARY_N_CTX`,
-32,768 tokens by default); otherwise the request is refused with HTTP 413 and the
-token counts. Uploads past 5 MB also return 413, and binary files 400.
+- **`persona`** is the persona file used: a name with no file falls back to its
+  folder's `default`, and the response says so.
+- **`truncated`** is true when `max_tokens` ended the summary rather than the
+  model.
+- **Cache:** summaries are cached under a hash of the whole prompt (persona text
+  included), `max_tokens` and `temperature`, so an edited persona takes effect at
+  once and an identical request returns the same summary.
+- **Limits:** the file and its persona, plus `max_tokens` for the summary, must
+  fit the model's context (`SUMMARY_N_CTX`, 32,768 tokens by default); otherwise
+  the request is refused with HTTP 413 and the token counts. Uploads past 5 MB
+  also return 413, and binary files 400.
 
 ---
 
-## Judgment
+### Judgment
 
-### POST /judge
+Loaded with the summarization model (`SUMMARY_MODEL_ENABLED=true`, the default);
+otherwise `/judge` returns HTTP 503.
+
+#### POST /judge
 
 Read a text under the caller's instructions with the local Gemma 4 model, and
-answer to the caller's JSON schema. Loaded with the summarization model
-(`SUMMARY_MODEL_ENABLED=true`, the default); otherwise returns HTTP 503. No
-persona is added: `instructions` is the whole system message and `input` the user
-turn. A grammar built from `schema` holds the answer's shape, and the answer is
-then validated against the whole schema: `valid` says whether it meets it.
+answer to the caller's JSON schema. No persona is added: `instructions` is the
+whole system message and `input` the user turn. A grammar built from `schema`
+holds the answer's shape, and the answer is then validated against the whole
+schema: `valid` says whether it meets it.
 
 | JSON field | Default | Description |
 | --- | --- | --- |
@@ -421,16 +437,17 @@ curl -X POST "http://localhost:8000/judge" \
 | `usage` | `input_tokens` (the chat template's included) and `output_tokens` |
 | `model`, `revision` | The Gemma checkpoint and its pinned revision |
 
-The grammar holds the answer's types, `enum` and `const`, `properties` and
-`required`, `items`, `anyOf`, `pattern`, and length and count bounds (an
-array's when it has `items`); an object gets only its listed properties unless
-`additionalProperties` allows more. It does not hold `minimum`, `maximum`,
-`exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`, `uniqueItems`,
-`minProperties`, `maxProperties`, `dependentRequired`, or `oneOf`'s "exactly
-one": those are left to validation. So an answer can be well-formed JSON yet
-break the schema; it is returned as it is, with `valid` false and the
-violations, and nothing is retried. For a bounded integer the grammar holds, use
-an `enum` of its values. Formats are not validated.
+- **The grammar holds** the answer's types, `enum` and `const`, `properties`
+  and `required`, `items`, `anyOf`, `pattern`, and length and count bounds (an
+  array's when it has `items`); an object gets only its listed properties unless
+  `additionalProperties` allows more.
+- **Validation alone checks** `minimum`, `maximum`, `exclusiveMinimum`,
+  `exclusiveMaximum`, `multipleOf`, `uniqueItems`, `minProperties`,
+  `maxProperties`, `dependentRequired`, and `oneOf`'s "exactly one". So an answer
+  can be well-formed JSON yet break the schema; it is returned as it is, with
+  `valid` false and the violations, and nothing is retried.
+- **Bounded integers and formats:** for a bounded integer the grammar holds, use
+  an `enum` of its values. Formats are not validated.
 
 An answer cut short is usually not JSON: `answer` is then `null`, `truncated`
 true, and the one violation says the answer is not JSON. A schema that allows
@@ -458,21 +475,26 @@ wrong with one /judge does not take:
   A `pattern` is validated within a shared half-second budget; one too slow to
   check is reported as a violation.
 
-The instructions and input, plus `max_tokens` for the answer, must fit the
-model's context (`SUMMARY_N_CTX`); otherwise the request is refused with HTTP 413
-and the token counts. One judgment runs at a time and two more may wait; a
-request beyond that returns HTTP 503 with `Retry-After: 10`. The model, its
-context and its lock are shared with `/summarize`, whose requests are not
-counted by this admission (they are bounded by their own rate limit), so an
-admitted judgment can also wait behind summaries. The route allows
-`JUDGE_RATE_LIMIT_CALLS` (60) calls per `JUDGE_RATE_LIMIT_SECONDS` (60) per
-client, as `/rate-limits` reports; past that, HTTP 429.
+- **Context:** the instructions and input, plus `max_tokens` for the answer,
+  must fit the model's context (`SUMMARY_N_CTX`); otherwise the request is
+  refused with HTTP 413 and the token counts.
+- **Admission:** one judgment runs at a time and two more may wait; a request
+  beyond that returns HTTP 503 with `Retry-After: 10`. The model, its context and
+  its lock are shared with `/summarize`, whose requests are not counted by this
+  admission (they are bounded by their own rate limit), so an admitted judgment
+  can also wait behind summaries.
+- **Rate limit:** the route allows `JUDGE_RATE_LIMIT_CALLS` (60) calls per
+  `JUDGE_RATE_LIMIT_SECONDS` (60) per client, as `/rate-limits` reports; past
+  that, HTTP 429.
 
 ---
 
-## AST Parsing
+### AST Parsing
 
-### POST /parse-ast
+One endpoint parses Python source with the standard library's `ast`, without a
+model.
+
+#### POST /parse-ast
 
 The structure of a Python module: its imports, and its top-level functions,
 classes (with their methods) and type aliases. Nested definitions are not listed.
@@ -572,9 +594,12 @@ nested too deeply for Python's parser return HTTP 400.
 
 ---
 
-## Monitoring
+### Monitoring
 
-### GET /health
+Two endpoints report the server's state: `/health` its models, and
+`/rate-limits` the limits per client.
+
+#### GET /health
 
 Server status: `"ok"` when every model switched on is loaded, otherwise
 `"degraded"` with HTTP 503. Without the key that is all it says:
@@ -618,7 +643,7 @@ curl "http://localhost:8000/health" -H "Authorization: Bearer $API_KEY"
 
 A model switched off in configuration reports `{"status": "disabled"}`.
 
-### GET /rate-limits
+#### GET /rate-limits
 
 The configured rate-limit budgets. No authentication.
 
@@ -643,7 +668,7 @@ training and two waiting, and the second runs no model.
 
 ---
 
-## Error Responses
+### Error Responses
 
 | Code | Description |
 |------|-------------|

@@ -23,19 +23,22 @@ limited before they are read, and the embedding, AMR, summarization and
 judgment endpoints are rate-limited per client. The
 [API reference](docs/api.md) documents every request and response.
 
-## Quick start
+---
 
-Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
+### Quick start
+
+Requires Python 3.13 and [uv](https://docs.astral.sh/uv/). EmbeddingGemma is
+gated: accept its terms on the
+[EmbeddingGemma model page](https://huggingface.co/google/embeddinggemma-300m)
+before you log in; Gemma 4 and AMRBART need no approval.
 
 ```bash
 uv venv --python 3.13
 uv pip install -r requirements.txt
-uv run hf auth login   # EmbeddingGemma is gated: accept its terms first
+uv run hf auth login
 ```
 
-Accept the terms on the [EmbeddingGemma model page](https://huggingface.co/google/embeddinggemma-300m)
-before logging in. Gemma 4 and AMRBART need no approval. `llama-cpp-python`
-builds llama.cpp; for Metal or CUDA see its
+`llama-cpp-python` builds llama.cpp; for Metal or CUDA see its
 [installation notes](https://github.com/abetlen/llama-cpp-python#installation).
 PyTorch models use CUDA, MPS, or the CPU, whichever is available.
 
@@ -53,7 +56,9 @@ The first start downloads about 17 GB of pinned checkpoints. Then open the
 [interactive docs](http://localhost:8000/docs), or check `/health` (with the key)
 for each model's revision and status.
 
-## Models and memory
+---
+
+### Models and memory
 
 Embeddings are always loaded. The other two models can be switched off:
 
@@ -76,39 +81,50 @@ SUMMARY_MODEL_BASENAME=gemma-4-12b-it-qat-q4_0.gguf
 SUMMARY_MODEL_REVISION=29d097773436b69ff9feafd636ab4cf873786537
 ```
 
-## Examples
+---
 
-Export `WORKBENCH_API_KEY` in your shell with the server's value.
+### Examples
+
+Export `WORKBENCH_API_KEY` in your shell with the server's value. Embed texts
+at 768 dimensions:
 
 ```bash
-# Embed texts at 768 dimensions
 curl -sS http://localhost:8000/embed/texts \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"texts":["candidate relation","canonical relation"],"dimensions":768,"prompt_name":"STS"}'
+```
 
-# Parse a sentence into an AMR graph
+Parse a sentence into an AMR graph:
+
+```bash
 curl -sS http://localhost:8000/amr/parse \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"text":"Can we adopt the parser library?"}'
+```
 
-# Summarize a file with a persona
+Summarize a file with a persona:
+
+```bash
 curl -sS http://localhost:8000/summarize \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -F "file=@src/server.py" -F "persona=developer"
+```
 
-# Classify a log line, the answer held to a JSON schema
+Classify a log line, with the answer held to a JSON schema:
+
+```bash
 curl -sS http://localhost:8000/judge \
   -H "Authorization: Bearer $WORKBENCH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"instructions":"Classify the log line by severity.","input":"disk /dev/sda1 is 97% full","schema":{"type":"object","properties":{"severity":{"type":"string","enum":["info","warning","error"]}},"required":["severity"]}}'
 ```
 
-**Embeddings.** `/embed/texts` embeds whole texts. `/embed/tokens` reads a word
+**Embeddings.** `/embed/texts` embeds whole texts; `/embed/tokens` reads a word
 in its sentence: the model's state at a character span, as JSON numbers or
 compact base64 float32. EmbeddingGemma reads 2,048 tokens: `/embed/texts`
-truncates past that, while `/embed` and `/embed/tokens` refuse the text. Split
+truncates past that, while `/embed` and `/embed/tokens` refuse the text, so split
 longer inputs.
 
 **Corpus transformer.** `/corpus/gpt` trains a small network on your sentences
@@ -189,8 +205,8 @@ flowchart LR
 display (`linearized`), and a validated PENMAN graph with typed `triples`.
 `decode_status` is `ok`, `invalid` (diagnostics kept, no graph),
 `input_too_long` (skipped), or `timed_out` (generation passed its deadline; no
-graph). Inputs over 400 source tokens are never silently truncated. Graphs are linguistic interpretations; downstream systems decide
-their use.
+graph). Inputs over 400 source tokens are never silently truncated. Graphs are
+linguistic interpretations; downstream systems decide their use.
 
 **Summarization.** Personas are editable system prompts in
 [`personas/`](personas/README.md); an edit takes effect on the next request. Log
@@ -199,15 +215,19 @@ used, and says `"truncated": true` when the token limit, not the model, ended th
 summary.
 
 **Judgment.** `/judge` reads `input` under `instructions`, which are the whole
-system message: no persona is added. A grammar built from `schema` holds the
-answer's shape, and the answer, parsed in `answer`, is then validated against
-the whole schema: `valid` and `violations` report keywords the grammar cannot
-hold, such as `minimum` and `maximum`. Schemas are bounded in size and in their
-length and count bounds. Nothing is cached, so each call is a new sample
-(`temperature` 0 for a near-deterministic one). One judgment runs at a time and
-two may wait; beyond that the answer is 503 with `Retry-After`.
+system message, with no persona added. A grammar built from `schema` holds the
+answer's shape, and the parsed `answer` is then validated against the whole
+schema: `valid` and `violations` report keywords the grammar cannot hold, such as
+`minimum` and `maximum`.
 
-## Configuration
+Schemas are bounded in size and in their length and count bounds. Nothing is
+cached, so each call is a new sample (`temperature` 0 for a near-deterministic
+one). One judgment runs at a time and two may wait; beyond that the answer is 503
+with `Retry-After`.
+
+---
+
+### Configuration
 
 Settings live in [`src/config.py`](src/config.py) and are read from `.env` or the
 environment; restart the server after changing them.
@@ -231,7 +251,9 @@ Rate limits apply to the embedding, AMR, summarization, and judgment endpoints,
 per client IP, HTTP method, and route, within one process; `/rate-limits` reports
 them. Run a single worker.
 
-## Development
+---
+
+### Development
 
 ```bash
 uv run ruff check .
@@ -240,10 +262,17 @@ uv run pytest
 
 Tests mock inference and use dummy credentials; no models are downloaded.
 
-## License
+---
 
-eGemma's code is [MIT-licensed](LICENSE). The corpus transformer adapts
-[nanoGPT](https://github.com/karpathy/nanoGPT) (MIT). Model weights are not
-included and keep their own terms: EmbeddingGemma under the Gemma Terms of Use,
-Gemma 4 under Apache-2.0, AMRBART under MIT. See
+### License
+
+Model weights are not included and keep their own terms; see
 [third-party notices](THIRD_PARTY_NOTICES.md).
+
+| Part | License |
+| --- | --- |
+| eGemma's code | [MIT](LICENSE) |
+| The corpus transformer | Adapts [nanoGPT](https://github.com/karpathy/nanoGPT) (MIT) |
+| EmbeddingGemma weights | Gemma Terms of Use |
+| Gemma 4 weights | Apache-2.0 |
+| AMRBART weights | MIT |

@@ -4,7 +4,9 @@ eGemma's original code is licensed under the [MIT License](LICENSE).
 The third-party material below retains its own license. No model weights or
 training datasets are bundled in this repository.
 
-## Adapted code
+---
+
+### Adapted code
 
 [`src/models/corpus_gpt.py`](src/models/corpus_gpt.py) adapts the GPT model of
 [nanoGPT](https://github.com/karpathy/nanoGPT) by Andrej Karpathy (its `model.py`
@@ -30,7 +32,9 @@ ignores. It also departs from nanoGPT's recipe:
 nanoGPT is covered by the MIT License, copyright (c) 2022 Andrej Karpathy,
 reproduced in [`LICENSES/nanoGPT-MIT.txt`](LICENSES/nanoGPT-MIT.txt).
 
-## Semantic parsing dependencies
+---
+
+### Semantic parsing dependencies
 
 | Package | License | Source |
 | --- | --- | --- |
@@ -44,7 +48,9 @@ notices distributed with their packages. This document is not a complete
 inventory of transitive dependencies; preserve their notices when distributing
 an environment or container.
 
-## Downloaded models
+---
+
+### Downloaded models
 
 | Configured model | Published license or terms |
 | --- | --- |

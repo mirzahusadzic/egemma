@@ -2,7 +2,9 @@
 
 This directory contains **provisional, user-controlled personas** for tailoring AI responses to specific contexts.
 
-## Important Notice
+---
+
+### Important Notice
 
 ⚠️ **These personas are PROVISIONAL and EXPERIMENTAL.**
 
@@ -11,7 +13,9 @@ This directory contains **provisional, user-controlled personas** for tailoring 
 - **No security guarantees**: Personas do NOT provide safety or ethical guardrails
 - **Your responsibility**: How you use these personas is entirely up to you
 
-## What Are Personas?
+---
+
+### What Are Personas?
 
 Personas are prompt templates that shape AI model responses for specific tasks:
 
@@ -22,13 +26,17 @@ Personas are prompt templates that shape AI model responses for specific tasks:
 - `docs/operational_validator.md` - Operational pattern analysis
 - etc.
 
-## Model
+---
+
+### Model
 
 Personas are system prompts for the local summarization model, Gemma 4 by
 default (`SUMMARY_MODEL_NAME` in `src/config.py`). Content never leaves the
 machine. Any instruction-tuned GGUF configured there receives the same personas.
 
-## Using Personas
+---
+
+### Using Personas
 
 Pass a persona's file name to `/summarize`:
 
@@ -39,12 +47,15 @@ curl -X POST "http://localhost:8000/summarize" \
   -F "persona=developer"
 ```
 
-Markdown files use `docs/`; every other file type uses `code/`. A persona that
-does not exist falls back to that folder's `default.md`. The placeholders
-`{language}` and `{max_tokens}` are filled in. Any other brace, such as in a JSON
-example, is kept as written; doubled braces (`{{`, `}}`) stand for single ones.
+- **Folders:** Markdown files use `docs/`; every other file type uses `code/`. A
+  persona that does not exist falls back to that folder's `default.md`.
+- **Placeholders:** `{language}` and `{max_tokens}` are filled in. Any other
+  brace, such as in a JSON example, is kept as written; doubled braces (`{{`,
+  `}}`) stand for single ones.
 
-## Modifying Personas
+---
+
+### Modifying Personas
 
 **You own these files.** To customize:
 
@@ -58,7 +69,9 @@ the persona file it used, so a fallback to `default.md` is visible.
 
 **No approval needed. No "official" version to follow.**
 
-## Security and Ethics
+---
+
+### Security and Ethics
 
 **Personas do NOT provide:**
 - ❌ Content filtering
@@ -72,7 +85,9 @@ For cognition-cli users: The dual-use risks of semantic alignment measurement
 exist regardless of which personas you use. See `cognition-cli security mandate`
 for details.
 
-## License
+---
+
+### License
 
 These personas are provided as-is under the MIT license (same as eGemma).
 
