@@ -50,7 +50,7 @@ class CorpusGPTRequest(BaseModel):
     words: dict[str, Word] = Field(default_factory=dict)
     positions: dict[str, list[tuple[int, int]]] = Field(default_factory=dict)
     steps: int = Field(1500, ge=1, le=20000)
-    seed: int = 7
+    seed: int = Field(7, ge=0, le=2**32 - 1)  # torch refuses seeds past 64 bits
     dimensions: int = Field(64, ge=8, le=512)
     layers: int = Field(4, ge=1, le=12)
     heads: int = Field(4, ge=1, le=16)

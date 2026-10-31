@@ -152,7 +152,7 @@ back, under keys of its choosing:
 | `words` | `{}` | words of at most 256 characters | Key → word: return that word's token-embedding row (the learned weights). A key whose word is absent is omitted. |
 | `positions` | `{}` | at most 200,000 places in all | Key → `[[sentence, word], …]`, zero-based: return the hidden state at each layer at those places, averaged. An out-of-range place returns HTTP 422. |
 | `steps` | 1500 | 1–20,000 | Training steps (batches of up to 32 sentences) |
-| `seed` | 7 | an integer | Seeds initialization and batch order |
+| `seed` | 7 | 0–4,294,967,295 | Seeds initialization and batch order |
 | `dimensions` | 64 | 8–512 | Width; must divide evenly among `heads` |
 | `layers` | 4 | 1–12 | Transformer blocks |
 | `heads` | 4 | 1–16 | Attention heads |

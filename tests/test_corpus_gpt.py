@@ -137,6 +137,31 @@ def test_corpus_read_back_is_bounded(body, detail):
     assert detail in json.dumps(response.json())
 
 
+TINY = {"steps": 1, "dimensions": 8, "layers": 1, "heads": 1, "threads": 1}
+
+
+@pytest.mark.parametrize(
+    "seed", [-1, 2**32, 2**64], ids=["negative", "past 32 bits", "past 64 bits"]
+)
+def test_a_seed_outside_32_bits_is_refused(seed):
+    # torch refuses a seed past 64 bits, which was answered as a server fault
+    response = TestClient(_app()).post(
+        "/corpus/gpt",
+        json={"sentences": SENTENCES, "stream": False, "seed": seed, **TINY},
+    )
+    assert response.status_code == 422
+    assert "seed" in json.dumps(response.json())
+
+
+@pytest.mark.parametrize("seed", [0, 2**32 - 1])
+def test_a_seed_within_32_bits_trains(seed):
+    response = TestClient(_app()).post(
+        "/corpus/gpt",
+        json={"sentences": SENTENCES, "stream": False, "seed": seed, **TINY},
+    )
+    assert response.status_code == 200
+
+
 def test_a_request_past_the_waiting_room_is_turned_away(monkeypatch):
     full = threading.BoundedSemaphore(1)
     full.acquire()
