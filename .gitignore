@@ -48,7 +48,3 @@ uv.lock
 # Local model weights; application model wrappers under src/models remain source.
 /models/
 node_modules
-
-# cognition-cli specific
-.open_cognition
-.sigma

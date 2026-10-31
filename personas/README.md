@@ -81,10 +81,6 @@ the persona file it used, so a fallback to `default.md` is visible.
 
 **They are prompt templates**, not security infrastructure.
 
-For cognition-cli users: The dual-use risks of semantic alignment measurement
-exist regardless of which personas you use. See `cognition-cli security mandate`
-for details.
-
 ---
 
 ### License
