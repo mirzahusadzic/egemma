@@ -201,6 +201,8 @@ flowchart LR
     class CP caller
 ```
 
+<p align="center"><em>Both models read the same corpus; only EmbeddingGemma has read anything else.</em></p>
+
 **AMR.** Each result keeps the raw decoded text (`linearized_raw`), an indented
 display (`linearized`), and a validated PENMAN graph with typed `triples`.
 `decode_status` is `ok`, `invalid` (diagnostics kept, no graph),
