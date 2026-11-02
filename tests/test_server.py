@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from src.models.summarization import Summary, SummaryInputTooLong
 from src.routers.embed import EmbeddingDimensions
 from src.server import app, get_api_key, settings
+from tests.gemma_double import gemma
 
 
 @pytest.fixture(autouse=True)
@@ -76,21 +77,11 @@ def caching_test_client(monkeypatch):
         mock_embedding_instance.load_model.return_value = None
         mock_embedding_instance.model = MagicMock()
 
-        mock_llama_instance = MagicMock()
-        mock_llama_instance.tokenize.return_value = [1] * 10
-        mock_llama_instance.n_ctx.return_value = settings.SUMMARY_N_CTX
-        mock_llama_instance.create_chat_completion.return_value = {
-            "choices": [
-                {
-                    "message": {"content": "This is a cached summary."},
-                    "finish_reason": "stop",
-                }
-            ]
-        }
+        mock_llama_instance = gemma("This is a cached summary.")
         MockLlama.return_value = mock_llama_instance
 
         with TestClient(app) as c:
-            yield c, mock_llama_instance.create_chat_completion
+            yield c, mock_llama_instance.create_completion
 
 
 def test_read_root_redirect(client):

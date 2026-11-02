@@ -1,3 +1,4 @@
+import functools
 import json
 import logging
 import os
@@ -7,6 +8,7 @@ from typing import Any, NamedTuple
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
+from llama_cpp.llama_chat_format import Jinja2ChatFormatter
 
 from ..config import settings
 from ..util.content_cache import ContentCache
@@ -18,6 +20,13 @@ _PERSONA_FIELD = re.compile(r"\{\{|\}\}|\{(language|max_tokens)\}")
 
 # The chat template's own tokens around the two turns, with room to spare.
 _TEMPLATE_TOKENS = 64
+
+
+@functools.lru_cache(maxsize=4)
+def _chat_formatter(template: str, bos_token: str, eos_token: str):
+    return Jinja2ChatFormatter(
+        template=template, bos_token=bos_token, eos_token=eos_token
+    )
 
 
 class SummaryInputTooLong(ValueError):
@@ -112,6 +121,45 @@ class SummarizationModelWrapper:
         )
         logger.info(f"Summarization model loaded: {settings.SUMMARY_MODEL_NAME}")
 
+    def _prompt(self, messages: list[dict[str, str]], **options) -> list[int]:
+        """The model's chat template around `messages`, as tokens.
+
+        The template's own marks are read as control tokens; each message's
+        content is read as text, so a `<turn|>` in it cannot end its turn.
+        Called under the inference lock."""
+        model = self.model
+        formatter = _chat_formatter(
+            model.metadata["tokenizer.chat_template"],
+            model.detokenize([model.token_bos()], special=True).decode(),
+            model.detokenize([model.token_eos()], special=True).decode(),
+        )
+        marks = [f"\ue000{n}\ue001" for n in range(len(messages))]
+        rendered = formatter(
+            messages=[
+                {**message, "content": f" {mark} "}
+                for message, mark in zip(messages, marks, strict=True)
+            ],
+            **options,
+        ).prompt
+        tokens = []
+        for message, mark in zip(messages, marks, strict=True):
+            content = message["content"]
+            # A template that trims a message's content drops the spaces too.
+            if f" {mark} " in rendered:
+                before, rendered = rendered.split(f" {mark} ", 1)
+            elif mark in rendered:
+                before, rendered = rendered.split(mark, 1)
+                content = content.strip()
+            else:
+                raise RuntimeError("The chat template leaves out a message")
+            tokens += model.tokenize(
+                before.encode("utf-8"), add_bos=False, special=True
+            )
+            tokens += model.tokenize(content.encode("utf-8"), add_bos=False)
+        return tokens + model.tokenize(
+            rendered.encode("utf-8"), add_bos=False, special=True
+        )
+
     def summarize(
         self,
         content: str,
@@ -164,14 +212,14 @@ class SummarizationModelWrapper:
                     f"the summary up to {final_max_tokens}; the context holds "
                     f"{context}. Split the file, or raise SUMMARY_N_CTX."
                 )
-            response = self.model.create_chat_completion(
-                messages=messages,
+            response = self.model.create_completion(
+                prompt=self._prompt(messages),
                 temperature=final_temperature,
                 max_tokens=final_max_tokens,
             )
             choice = response["choices"][0]
             summary = Summary(
-                choice["message"]["content"],
+                choice["text"],
                 choice.get("finish_reason") == "length",
                 persona,
             )
@@ -215,14 +263,14 @@ class SummarizationModelWrapper:
                     f"and the answer up to {final_max_tokens}; the context holds "
                     f"{context}."
                 )
-            response = self.model.create_chat_completion(
-                messages=messages,
+            response = self.model.create_completion(
+                prompt=self._prompt(messages),
                 temperature=final_temperature,
                 max_tokens=final_max_tokens,
                 grammar=grammar,
             )
         choice = response["choices"][0]
-        content = choice["message"]["content"] or ""
+        content = choice["text"] or ""
         try:
             answer = json.loads(content)
         except ValueError:

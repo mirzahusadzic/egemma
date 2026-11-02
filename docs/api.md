@@ -333,7 +333,8 @@ returns HTTP 503.
 #### POST /summarize
 
 Summarize a code, Markdown, or log file with the local Gemma 4 model and a
-[persona](../personas/README.md).
+[persona](../personas/README.md). The file is read as text: a chat-template mark
+in it, such as `<turn|>`, is not a control token.
 
 The language comes from the file name: `.md`, `.markdown`, `.mkd` and `.mdx` are
 Markdown and use the `docs/` personas; `.log` files, rotated ones such as
@@ -389,9 +390,10 @@ otherwise `/judge` returns HTTP 503.
 
 Read a text under the caller's instructions with the local Gemma 4 model, and
 answer to the caller's JSON schema. No persona is added: `instructions` is the
-whole system message and `input` the user turn. A grammar built from `schema`
-holds the answer's shape, and the answer is then validated against the whole
-schema: `valid` says whether it meets it.
+whole system message and `input` the user turn, both read as text, so a
+chat-template mark in them, such as `<turn|>`, cannot end a turn. A grammar
+built from `schema` holds the answer's shape, and the answer is then validated
+against the whole schema: `valid` says whether it meets it.
 
 | JSON field | Default | Description |
 | --- | --- | --- |
