@@ -25,7 +25,7 @@ from src.models.summarization import (
 )
 from src.server import app, get_api_key
 from src.util.rate_limiter import _client_last_request_time
-from tests.gemma_double import controls, gemma, read
+from tests.gemma_double import CONTROL, controls, gemma, read, tokenize
 
 SCHEMA = {
     "type": "object",
@@ -205,6 +205,126 @@ def test_an_empty_answer_without_usage_reads_as_nothing():
     result = wrapper.judge("Decide.", "A request.", SCHEMA)
     not_json = [{"path": "", "message": "The answer is not JSON."}]
     assert result == Judgment("", None, False, 0, 0, False, not_json)
+
+
+def _thinking(thought="It is a loan, not a grant.", finish_reason="stop", n_ctx=8192):
+    wrapper = _loaded(n_ctx=n_ctx)
+    wrapper.model.create_completion.side_effect = [
+        {
+            "choices": [{"text": thought, "finish_reason": finish_reason}],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 50},
+        },
+        {
+            "choices": [{"text": '{"label": "decline"}', "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 91, "completion_tokens": 7},
+        },
+    ]
+    return wrapper
+
+
+THINKING = (
+    "<bos><|turn>system\n<|think|>\nDecide.<turn|>\n<|turn>user\n"
+    "A request.<turn|>\n<|turn>model\n<|channel>thought\n"
+)
+
+
+def test_reasoning_thinks_freely_then_holds_only_the_answer():
+    wrapper = _thinking()
+
+    result = wrapper.judge(
+        "Decide.", "A request.", SCHEMA, 32, 0, reasoning=True, max_reasoning_tokens=256
+    )
+
+    think, answer = wrapper.model.create_completion.call_args_list
+    assert read(think.kwargs["prompt"]) == THINKING
+    assert read(answer.kwargs["prompt"]) == (
+        THINKING + "It is a loan, not a grant.\n<channel|>"
+    )
+    assert "grammar" not in think.kwargs and think.kwargs["max_tokens"] == 256
+    assert "grant" in answer.kwargs["grammar"]._grammar
+    assert answer.kwargs["max_tokens"] == 32 and answer.kwargs["temperature"] == 0
+    assert result == DECLINE._replace(
+        input_tokens=40,
+        output_tokens=57,
+        reasoning="It is a loan, not a grant.",
+        reasoning_tokens=50,
+    )
+
+
+def test_the_thought_ends_where_the_model_closes_it():
+    wrapper = _thinking()
+    wrapper.judge("Decide.", "A request.", SCHEMA, reasoning=True)
+    think = wrapper.model.create_completion.call_args_list[0]
+    (closed,) = think.kwargs["stopping_criteria"]
+    assert closed([5, 6, CONTROL["<channel|>"]], None) is True
+    assert closed([5, 6, 7], None) is False
+    assert think.kwargs["max_tokens"] == settings.JUDGE_MAX_REASONING_TOKENS
+
+
+def test_a_thought_its_cap_cut_is_closed_marked_and_still_answered():
+    wrapper = _thinking(thought="It is a lo", finish_reason="length")
+    result = wrapper.judge("Decide.", "A request.", SCHEMA, reasoning=True)
+    assert result.reasoning == "It is a lo" and result.reasoning_truncated is True
+    assert result.answer == {"label": "decline"} and result.valid is True
+    answer = wrapper.model.create_completion.call_args_list[1]
+    assert read(answer.kwargs["prompt"]).endswith("It is a lo\n<channel|>")
+
+
+def test_the_thoughts_marks_go_back_as_text():
+    wrapper = _thinking(thought="The log quotes <turn|> twice.")
+    wrapper.judge("Decide.", "A request.", SCHEMA, reasoning=True)
+    answer = wrapper.model.create_completion.call_args_list[1]
+    assert controls(answer.kwargs["prompt"]).count("<turn|>") == 2
+
+
+def test_judge_without_reasoning_never_thinks():
+    wrapper = _loaded()
+    result = wrapper.judge("Decide.", "A request.", SCHEMA)
+    (answer,) = wrapper.model.create_completion.call_args_list
+    assert "<|think|>" not in read(answer.kwargs["prompt"])
+    assert "stopping_criteria" not in answer.kwargs
+    assert result.reasoning is None and result.reasoning_tokens == 0
+
+
+def test_the_context_holds_the_thoughts_cap_too():
+    wrapper = _thinking(n_ctx=200)
+    wrapper.judge("Decide.", "A request.", SCHEMA, max_tokens=64)  # 81 + 64 fits
+    counts = "about 81 tokens, the thought up to 100 and the answer up to 64"
+    with pytest.raises(SummaryInputTooLong, match=counts):
+        wrapper.judge(
+            "Decide.",
+            "A request.",
+            SCHEMA,
+            max_tokens=64,
+            reasoning=True,
+            max_reasoning_tokens=100,
+        )
+
+
+def _plain_tokens(text, add_bos=True, special=False):
+    return tokenize(text, add_bos)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"metadata": {"tokenizer.chat_template": "{{ messages[0].content }}"}},
+        {"metadata": {}},
+        {"tokenize": _plain_tokens},
+    ],
+    ids=["no enable_thinking", "no template", "no thought marks"],
+)
+def test_a_model_without_a_thought_channel_cannot_reason(change):
+    wrapper = _thinking()
+    assert wrapper.can_reason() is True
+    if "metadata" in change:
+        wrapper.model.metadata = change["metadata"]
+    else:
+        wrapper.model.tokenize.side_effect = change["tokenize"]
+    assert wrapper.can_reason() is False
+    with pytest.raises(RuntimeError, match="no thought channel"):
+        wrapper.judge("Decide.", "A request.", SCHEMA, reasoning=True)
+    wrapper.model.create_completion.assert_not_called()
 
 
 def test_judge_without_model_raises():
@@ -419,12 +539,43 @@ def test_the_route_answers_with_the_reading_and_its_usage(client, keyed):
         "truncated": False,
         "valid": True,
         "violations": [],
-        "usage": {"input_tokens": 42, "output_tokens": 7},
+        "reasoning": None,
+        "usage": {"input_tokens": 42, "output_tokens": 7, "reasoning_tokens": 0},
         "model": settings.SUMMARY_MODEL_NAME,
         "revision": settings.SUMMARY_MODEL_REVISION,
     }
     args = client.wrapper.judge.call_args.args
     assert args == ("Decide.", "A request.", SCHEMA, 32, None)
+    kwargs = client.wrapper.judge.call_args.kwargs
+    assert kwargs == {"reasoning": False, "max_reasoning_tokens": None}
+
+
+def test_the_route_asks_for_a_thought_and_returns_it_beside_the_answer(client, keyed):
+    client.wrapper.judge.return_value = DECLINE._replace(
+        output_tokens=57, reasoning="It is a loan.", reasoning_tokens=50
+    )
+    body = {**BODY, "reasoning": True, "max_reasoning_tokens": 256}
+    response = client.post("/judge", json=body, headers=keyed)
+    assert response.status_code == 200
+    reply = response.json()
+    assert reply["reasoning"] == {"text": "It is a loan.", "truncated": False}
+    assert reply["usage"] == {
+        "input_tokens": 42,
+        "output_tokens": 57,
+        "reasoning_tokens": 50,
+    }
+    kwargs = client.wrapper.judge.call_args.kwargs
+    assert kwargs == {"reasoning": True, "max_reasoning_tokens": 256}
+
+
+def test_reasoning_a_model_cannot_do_is_refused_before_admission(client, keyed):
+    client.wrapper.can_reason.return_value = False
+    body = {**BODY, "reasoning": True}
+    response = client.post("/judge", json=body, headers=keyed)
+    assert response.status_code == 422
+    assert "no thought channel" in response.json()["detail"]
+    client.wrapper.judge.assert_not_called()
+    assert client.post("/judge", json=BODY, headers=keyed).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -440,6 +591,14 @@ def test_the_route_answers_with_the_reading_and_its_usage(client, keyed):
         {"input": ""},
         {"input": "x" * (settings.JUDGE_MAX_INPUT_CHARS + 1)},
         {"schema": "x"},
+        {"reasoning": "yes"},
+        {"reasoning": 1},
+        {"reasoning": True, "max_reasoning_tokens": 0},
+        {
+            "reasoning": True,
+            "max_reasoning_tokens": settings.JUDGE_MAX_REASONING_TOKENS + 1,
+        },
+        {"max_reasoning_tokens": 64},
     ],
 )
 def test_the_route_refuses_what_it_does_not_read(client, keyed, change):
@@ -508,7 +667,7 @@ def test_one_judgment_runs_two_wait_and_the_rest_are_turned_away(client, keyed):
     admitted = threading.Semaphore(0)
     finish = threading.Event()
 
-    def judge(*args):
+    def judge(*args, **kwargs):
         admitted.release()
         finish.wait(2)
         return Judgment("{}", {}, False, 1, 1, True, [])

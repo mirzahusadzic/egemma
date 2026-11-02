@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # /judge reads a text under the caller's instruction with the same Gemma
     # model, no persona, and answers to the caller's JSON schema.
     JUDGE_MAX_TOKENS: int = 1024
+    # With reasoning, Gemma thinks before it answers, up to this many tokens.
+    JUDGE_MAX_REASONING_TOKENS: int = 4096
     JUDGE_TEMP: float = 0.7
     JUDGE_MAX_INPUT_CHARS: int = 200_000
     JUDGE_MAX_SCHEMA_DEPTH: int = 32

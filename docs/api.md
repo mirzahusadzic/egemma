@@ -402,8 +402,12 @@ against the whole schema: `valid` says whether it meets it.
 | `schema` | required | The JSON schema of the answer, an object |
 | `max_tokens` | 1024 | Maximum answer tokens, 1 to `JUDGE_MAX_TOKENS` (1024) |
 | `temperature` | 0.7 | Sampling temperature, 0 to 2 (`JUDGE_TEMP`) |
+| `reasoning` | false | `true` lets Gemma think before it answers; the thought is returned in `reasoning` |
+| `max_reasoning_tokens` | 4096 | The thought's cap, 1 to `JUDGE_MAX_REASONING_TOKENS` (4096); only with `reasoning` |
 
-Any other field is refused with HTTP 422.
+Any other field is refused with HTTP 422, and so are `max_reasoning_tokens`
+without `reasoning`, and `reasoning` when the configured model's chat template
+has no thought channel (Gemma 4's has one).
 
 ```bash
 curl -X POST "http://localhost:8000/judge" \
@@ -423,7 +427,8 @@ curl -X POST "http://localhost:8000/judge" \
   "truncated": false,
   "valid": true,
   "violations": [],
-  "usage": {"input_tokens": 38, "output_tokens": 8},
+  "reasoning": null,
+  "usage": {"input_tokens": 38, "output_tokens": 8, "reasoning_tokens": 0},
   "model": "google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
   "revision": "d1c082be9cf3c8a514acf63b8761f4b41935842e"
 }
@@ -436,7 +441,8 @@ curl -X POST "http://localhost:8000/judge" \
 | `truncated` | True when `max_tokens` ended the answer rather than the model |
 | `valid` | True when the answer is JSON and meets the whole schema |
 | `violations` | Where it does not: up to 20 of `{"path", "message"}`, `path` a JSON pointer into the answer (`""` for the whole) |
-| `usage` | `input_tokens` (the chat template's included) and `output_tokens` |
+| `reasoning` | The thought before the answer, `{"text", "truncated"}`, `truncated` true when `max_reasoning_tokens` ended it; `null` unless `reasoning` was asked |
+| `usage` | `input_tokens` (the chat template's included), `output_tokens` (the thought's included) and `reasoning_tokens` (the thought's alone; 0 without `reasoning`) |
 | `model`, `revision` | The Gemma checkpoint and its pinned revision |
 
 - **The grammar holds** the answer's types, `enum` and `const`, `properties`
@@ -477,9 +483,16 @@ wrong with one /judge does not take:
   A `pattern` is validated within a shared half-second budget; one too slow to
   check is reported as a violation.
 
-- **Context:** the instructions and input, plus `max_tokens` for the answer,
-  must fit the model's context (`SUMMARY_N_CTX`); otherwise the request is
-  refused with HTTP 413 and the token counts.
+- **Reasoning:** Gemma 4 has no reasoning levels, only thinking on or off, so
+  `max_reasoning_tokens` is the one control of its depth. With `reasoning`,
+  the model's own chat template turns thinking on, the thought is sampled
+  without the grammar until Gemma closes it or the cap does, and only the
+  answer after it is held; a thought the cap ended is closed there and still
+  answered.
+- **Context:** the instructions and input, plus `max_tokens` for the answer
+  and, with `reasoning`, `max_reasoning_tokens` for the thought, must fit the
+  model's context (`SUMMARY_N_CTX`); otherwise the request is refused with
+  HTTP 413 and the token counts.
 - **Admission:** one judgment runs at a time and two more may wait; a request
   beyond that returns HTTP 503 with `Retry-After: 10`. The model, its context and
   its lock are shared with `/summarize`, whose requests are not counted by this
@@ -678,7 +691,7 @@ training and two waiting, and the second runs no model.
 | 401 | Invalid API key |
 | 403 | Missing or malformed bearer credentials |
 | 413 | A request body or upload past its limit, or a file (`/summarize`) or instructions and input (`/judge`) too long for the model's context |
-| 422 | Request validation failed, or a schema `/judge` cannot hold its answer to |
+| 422 | Request validation failed, a schema `/judge` cannot hold its answer to, or `reasoning` the configured model cannot do |
 | 429 | Too many requests (rate limit exceeded) |
 | 499 | The client disconnected before the answer (`/amr/parse-batch`, `/corpus/gpt`) |
 | 500 | A server fault; the detail says what failed, and the server log has the rest |

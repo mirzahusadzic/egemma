@@ -4,7 +4,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..config import settings
 from ..models.judge_schema import JudgeSchemaError, check_judge_schema
@@ -50,6 +50,23 @@ class JudgeRequest(BaseModel):
         default=None, ge=1, le=settings.JUDGE_MAX_TOKENS, description="Answer cap."
     )
     temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning: bool = Field(
+        default=False,
+        strict=True,
+        description="Let Gemma think before it answers; the thought is returned.",
+    )
+    max_reasoning_tokens: int | None = Field(
+        default=None,
+        ge=1,
+        le=settings.JUDGE_MAX_REASONING_TOKENS,
+        description="The thought's cap; only with reasoning.",
+    )
+
+    @model_validator(mode="after")
+    def _a_cap_needs_a_thought(self) -> "JudgeRequest":
+        if self.max_reasoning_tokens is not None and not self.reasoning:
+            raise ValueError("max_reasoning_tokens is read only with reasoning")
+        return self
 
     @field_validator("answer_schema")
     @classmethod
@@ -65,12 +82,22 @@ class Violation(BaseModel):
     message: str
 
 
+class Reasoning(BaseModel):
+    text: str = Field(description="The thought, as the model wrote it.")
+    truncated: bool = Field(
+        description="True when max_reasoning_tokens ended the thought, not the model."
+    )
+
+
 class JudgeResponse(BaseModel):
     answer: Any = Field(description="The answer read as JSON; null when it is not.")
     text: str
     truncated: bool
     valid: bool = Field(description="The answer is JSON and meets the whole schema.")
     violations: list[Violation]
+    reasoning: Reasoning | None = Field(
+        description="The thought before the answer; null unless reasoning was asked."
+    )
     usage: dict[str, int]
     model: str
     revision: str
@@ -80,7 +107,8 @@ class JudgeResponse(BaseModel):
     "/judge",
     summary="Read a text under an instruction and answer to a JSON schema",
     description="One reading with the Gemma model, held to the schema by a "
-    "grammar. No persona and no cache: each call is a fresh sample.",
+    "grammar; with reasoning, Gemma thinks first and only the answer is held. "
+    "No persona and no cache: each call is a fresh sample.",
     response_model=JudgeResponse,
     dependencies=[
         Depends(
@@ -100,6 +128,14 @@ async def judge(request: JudgeRequest) -> JudgeResponse:
                 "in .env and restart the server."
             ),
         )
+    if request.reasoning and not summarization_model_wrapper.can_reason():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "The configured model cannot reason: its chat template has no "
+                "thought channel. Ask without reasoning."
+            ),
+        )
     if not _admission.acquire(blocking=False):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -117,6 +153,8 @@ async def judge(request: JudgeRequest) -> JudgeResponse:
             request.answer_schema,
             request.max_tokens,
             request.temperature,
+            reasoning=request.reasoning,
+            max_reasoning_tokens=request.max_reasoning_tokens,
         )
     except JudgeSchemaError as error:
         raise HTTPException(
@@ -142,9 +180,17 @@ async def judge(request: JudgeRequest) -> JudgeResponse:
         truncated=judgment.truncated,
         valid=judgment.valid,
         violations=judgment.violations,
+        reasoning=(
+            None
+            if judgment.reasoning is None
+            else Reasoning(
+                text=judgment.reasoning, truncated=judgment.reasoning_truncated
+            )
+        ),
         usage={
             "input_tokens": judgment.input_tokens,
             "output_tokens": judgment.output_tokens,
+            "reasoning_tokens": judgment.reasoning_tokens,
         },
         model=settings.SUMMARY_MODEL_NAME,
         revision=settings.SUMMARY_MODEL_REVISION,

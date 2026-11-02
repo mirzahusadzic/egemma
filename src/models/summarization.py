@@ -7,7 +7,7 @@ import threading
 from typing import Any, NamedTuple
 
 from huggingface_hub import hf_hub_download
-from llama_cpp import Llama
+from llama_cpp import Llama, StoppingCriteriaList
 from llama_cpp.llama_chat_format import Jinja2ChatFormatter
 
 from ..config import settings
@@ -20,6 +20,12 @@ _PERSONA_FIELD = re.compile(r"\{\{|\}\}|\{(language|max_tokens)\}")
 
 # The chat template's own tokens around the two turns, with room to spare.
 _TEMPLATE_TOKENS = 64
+
+# Gemma 4 thinks in a channel of its own: its template opens a turn with
+# thinking on when `enable_thinking` is set, and the model writes the thought
+# between these two marks before the answer.
+_THOUGHT_OPEN = "<|channel>thought\n"
+_THOUGHT_CLOSE = "<channel|>"
 
 
 @functools.lru_cache(maxsize=4)
@@ -38,9 +44,12 @@ class Judgment(NamedTuple):
     answer: Any  # the text read as JSON, or None when it is not JSON
     truncated: bool  # max_tokens ended the answer, not the model
     input_tokens: int
-    output_tokens: int
+    output_tokens: int  # the thought's tokens included
     valid: bool  # the answer is JSON and meets the whole schema
     violations: list[dict[str, str]]  # where it does not: {"path", "message"}
+    reasoning: str | None = None  # the thought before the answer, when asked for
+    reasoning_tokens: int = 0  # of output_tokens, the thought's
+    reasoning_truncated: bool = False  # its cap ended the thought, not the model
 
 
 class Summary(NamedTuple):
@@ -233,10 +242,14 @@ class SummarizationModelWrapper:
         schema: dict,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        reasoning: bool = False,
+        max_reasoning_tokens: int | None = None,
     ) -> Judgment:
         """One reading of `text` under `instructions`, answered to `schema`.
 
-        No persona and no cache: each call is a new sample.
+        No persona and no cache: each call is a new sample. With `reasoning`,
+        Gemma thinks first, unconstrained and up to `max_reasoning_tokens`;
+        only the answer after the thought is held by the grammar.
         """
         if self.model is None:
             raise RuntimeError("Summarization model not loaded")
@@ -247,28 +260,48 @@ class SummarizationModelWrapper:
         final_temperature = (
             temperature if temperature is not None else settings.JUDGE_TEMP
         )
+        thinking_tokens = 0
+        if reasoning:
+            thinking_tokens = (
+                max_reasoning_tokens
+                if max_reasoning_tokens is not None
+                else settings.JUDGE_MAX_REASONING_TOKENS
+            )
         messages = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": text},
         ]
+        thought = None
         with self._inference_lock:
             prompt_tokens = _TEMPLATE_TOKENS + sum(
                 len(self.model.tokenize(m["content"].encode("utf-8"), add_bos=False))
                 for m in messages
             )
             context = self.model.n_ctx()
-            if prompt_tokens + final_max_tokens > context:
-                raise SummaryInputTooLong(
-                    f"The instructions and text need about {prompt_tokens} tokens "
-                    f"and the answer up to {final_max_tokens}; the context holds "
-                    f"{context}."
+            if prompt_tokens + thinking_tokens + final_max_tokens > context:
+                thinking = (
+                    f", the thought up to {thinking_tokens}" if thinking_tokens else ""
                 )
-            response = self.model.create_completion(
-                prompt=self._prompt(messages),
-                temperature=final_temperature,
-                max_tokens=final_max_tokens,
-                grammar=grammar,
-            )
+                raise SummaryInputTooLong(
+                    f"The instructions and text need about {prompt_tokens} tokens"
+                    f"{thinking} and the answer up to {final_max_tokens}; the "
+                    f"context holds {context}."
+                )
+            if reasoning:
+                thought, response = self._think_then_answer(
+                    messages,
+                    grammar,
+                    final_max_tokens,
+                    thinking_tokens,
+                    final_temperature,
+                )
+            else:
+                response = self.model.create_completion(
+                    prompt=self._prompt(messages),
+                    temperature=final_temperature,
+                    max_tokens=final_max_tokens,
+                    grammar=grammar,
+                )
         choice = response["choices"][0]
         content = choice["text"] or ""
         try:
@@ -279,12 +312,85 @@ class SummarizationModelWrapper:
         else:
             violations = answer_violations(schema, answer)
         usage = response.get("usage") or {}
+        # With a thought, the input is the thought's prompt, not the answer's.
+        thought_text, thought_tokens, input_tokens, thought_cut = thought or (
+            None,
+            0,
+            int(usage.get("prompt_tokens", 0)),
+            False,
+        )
         return Judgment(
             content,
             answer,
             choice.get("finish_reason") == "length",
-            int(usage.get("prompt_tokens", 0)),
-            int(usage.get("completion_tokens", 0)),
+            input_tokens,
+            thought_tokens + int(usage.get("completion_tokens", 0)),
             not violations,
             violations,
+            thought_text,
+            thought_tokens,
+            thought_cut,
         )
+
+    def can_reason(self) -> bool:
+        """Whether the model can think before it answers: its chat template
+        takes `enable_thinking`, and the thought's marks are control tokens."""
+        model = self.model
+        template = model.metadata.get("tokenizer.chat_template") or ""
+        return "enable_thinking" in template and all(
+            len(model.tokenize(mark.encode("utf-8"), add_bos=False, special=True)) == 1
+            for mark in ("<|channel>", _THOUGHT_CLOSE)
+        )
+
+    def _think_then_answer(
+        self,
+        messages: list[dict[str, str]],
+        grammar: Any,
+        max_tokens: int,
+        max_reasoning_tokens: int,
+        temperature: float,
+    ) -> tuple[tuple[str, int, int, bool], dict]:
+        """The model's own chat template with thinking on: the thought is
+        sampled freely until the model closes it or its cap does, then closed,
+        and the answer after it is sampled under the grammar.
+
+        Returns (thought, its tokens, the prompt's tokens, whether the cap cut
+        it) and the answer's completion. Called under the inference lock."""
+        model = self.model
+        if not self.can_reason():
+            raise RuntimeError("The model's chat template has no thought channel")
+
+        def marks(text: str) -> list[int]:
+            return model.tokenize(text.encode("utf-8"), add_bos=False, special=True)
+
+        (close,) = marks(_THOUGHT_CLOSE)
+        prompt = self._prompt(messages, enable_thinking=True) + marks(_THOUGHT_OPEN)
+
+        def closed(tokens, logits) -> bool:
+            return len(tokens) > 0 and int(tokens[-1]) == close
+
+        thinking = model.create_completion(
+            prompt=prompt,
+            max_tokens=max_reasoning_tokens,
+            temperature=temperature,
+            stopping_criteria=StoppingCriteriaList([closed]),
+        )
+        choice = thinking["choices"][0]
+        thought = choice["text"].removesuffix(_THOUGHT_CLOSE).strip()
+        usage = thinking.get("usage") or {}
+        # The thought goes back as text, as the caller's messages do, and is
+        # closed as the template closes one.
+        answer = model.create_completion(
+            prompt=prompt
+            + model.tokenize(thought.encode("utf-8"), add_bos=False)
+            + marks(f"\n{_THOUGHT_CLOSE}"),
+            max_tokens=max_tokens,
+            temperature=temperature,
+            grammar=grammar,
+        )
+        return (
+            thought,
+            int(usage.get("completion_tokens", 0)),
+            int(usage.get("prompt_tokens", 0)),
+            choice.get("finish_reason") == "length",
+        ), answer

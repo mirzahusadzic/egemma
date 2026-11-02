@@ -220,7 +220,9 @@ summary.
 system message, with no persona added. A grammar built from `schema` holds the
 answer's shape, and the parsed `answer` is then validated against the whole
 schema: `valid` and `violations` report keywords the grammar cannot hold, such as
-`minimum` and `maximum`.
+`minimum` and `maximum`. With `reasoning`, Gemma thinks first, up to
+`max_reasoning_tokens`, and only the answer after the thought is held; the
+thought comes back beside it.
 
 Schemas are bounded in size and in their length and count bounds. Nothing is
 cached, so each call is a new sample (`temperature` 0 for a near-deterministic
@@ -239,6 +241,7 @@ environment; restart the server after changing them.
 | `SUMMARY_N_CTX` | `32768` tokens |
 | `SUMMARY_MAX_TOKEN` | `512` |
 | `JUDGE_MAX_TOKENS` | `1024` |
+| `JUDGE_MAX_REASONING_TOKENS` | `4096` |
 | `JUDGE_MAX_INPUT_CHARS` | `200000` each for instructions and input |
 | `JUDGE_MAX_SCHEMA_BYTES` | `65536` per `/judge` schema |
 | `MAX_FILE_SIZE_BYTES` | `5242880` (5 MB) per upload |
