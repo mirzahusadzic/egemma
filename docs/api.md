@@ -282,7 +282,10 @@ JSON escapes newlines inside both formatted graph strings, so use
 Decoding uses PENMAN's AMR model. Lexical roles such as `:consist-of` and
 `:prep-out-of` keep their direction; genuine inverses such as `:ARG0-of` are
 decoded as reversed `:ARG0` edges. The full output must contain one complete
-graph with concepts and relation targets. eGemma does not repair missing
+graph with concepts and relation targets. Two splits in the parser's output
+are joined first: a colon detached from an `:op` or `:prep-` role (`: op1`),
+and a hyphenated concept broken after a hyphen (`one-after-the- other`);
+`linearized_raw` keeps the output as generated. eGemma does not repair missing
 structure or apply downstream semantic canonicalization.
 
 #### POST /amr/parse-batch

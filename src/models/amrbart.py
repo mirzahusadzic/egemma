@@ -56,6 +56,27 @@ def _join_split_roles(tokens: list[str]) -> list[str]:
     return joined
 
 
+_HYPHEN_ENDED = re.compile(r'[^\s()":/<>~#]*[^\s()":/<>~#-]-')
+_WORD = re.compile(r'[^\s()":/<>~#-][^\s()":/<>~#]*')
+
+
+def _join_split_concepts(tokens: list[str]) -> list[str]:
+    """Join a hyphenated concept that AMRBART split after a hyphen.
+
+    The checkpoint sometimes continues a concept with a word-initial subword,
+    as in ``one-after-the- other``. A bare word cannot follow a concept or a
+    target in a valid graph, so only an otherwise invalid graph changes; a
+    lone ``-`` (polarity) is never joined.
+    """
+    joined: list[str] = []
+    for token in tokens:
+        if joined and _HYPHEN_ENDED.fullmatch(joined[-1]) and _WORD.fullmatch(token):
+            joined[-1] += token
+        else:
+            joined.append(token)
+    return joined
+
+
 class AMRDecodeError(ValueError):
     """Raised when AMRBART emits pointer notation that cannot form an AMR graph."""
 
@@ -115,7 +136,9 @@ def format_linearized_amr(linearized: str) -> str:
         value = value[len("<AMR>") :].lstrip()
     if value.endswith("</AMR>"):
         value = value[: -len("</AMR>")].rstrip()
-    tokens = _join_split_roles(_DISPLAY_TOKEN_PATTERN.findall(value))
+    tokens = _join_split_concepts(
+        _join_split_roles(_DISPLAY_TOKEN_PATTERN.findall(value))
+    )
 
     def node(index: int, depth: int, prefix: str = "") -> tuple[list[str], int]:
         if index + 2 >= len(tokens) or tokens[index] != "(":
@@ -149,8 +172,9 @@ def pointer_graph_to_penman(linearized: str) -> str:
 
     AMRBART declares a node as ``(<pointer:n> concept ...)`` and later reuses
     ``<pointer:n>`` as a reference. This decoder performs only that mechanical
-    lowering, including detached colons on op/prep role tokens. It does not
-    supply missing concepts, reinterpret relations, or replace model output.
+    lowering, including detached colons on op/prep role tokens and concepts
+    split after a hyphen. It does not supply missing concepts, reinterpret
+    relations, or replace model output.
     """
 
     value = linearized.strip()
@@ -169,7 +193,7 @@ def pointer_graph_to_penman(linearized: str) -> str:
                 raise AMRDecodeError("AMRBART returned an unterminated literal")
             token = json.dumps(token[5:-6].strip(), ensure_ascii=False)
         tokens.append(token)
-    tokens = _join_split_roles(tokens)
+    tokens = _join_split_concepts(_join_split_roles(tokens))
     if not tokens:
         raise AMRDecodeError("AMRBART returned an empty graph")
 

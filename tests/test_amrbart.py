@@ -229,6 +229,38 @@ def test_split_role_normalization_does_not_supply_missing_concepts():
         )
 
 
+SPLIT_CONCEPT = (
+    "<AMR> ( <pointer:0> come-01 :ARG1 ( <pointer:1> they ) "
+    ":manner ( <pointer:2> one-after-the- other ) )</AMR>"
+)
+
+
+def test_a_concept_split_after_a_hyphen_is_joined(parser):
+    parser.tokenizer.decode.return_value = SPLIT_CONCEPT
+    result = parser.parse("They came in one after the other.")
+
+    assert result.decode_status == "ok"
+    assert AMRTriple("z2", ":instance", "one-after-the-other", "literal") in (
+        result.triples
+    )
+    assert "(<pointer:2> one-after-the-other)" in result.linearized
+    assert result.linearized_raw == SPLIT_CONCEPT
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        "( <pointer:0> possible-01 :polarity - other )",
+        "( <pointer:0> one-after-the other )",
+        "( <pointer:0> one-after-the- :other )",
+        '( <pointer:0> one-after-the- "other" )',
+    ],
+)
+def test_only_a_word_after_a_hyphen_ending_concept_is_joined(graph):
+    with pytest.raises(AMRDecodeError):
+        pointer_graph_to_penman(f"<AMR> {graph} </AMR>")
+
+
 def test_pointer_graph_decoder_lowers_checkpoint_literal_tokens():
     graph = penman.decode(
         pointer_graph_to_penman(
