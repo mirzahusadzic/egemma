@@ -42,7 +42,7 @@ reproduced in [`LICENSES/nanoGPT-MIT.txt`](LICENSES/nanoGPT-MIT.txt).
 | Transformers 4.57.6 | Apache-2.0 | [Upstream license](https://github.com/huggingface/transformers/blob/v4.57.6/LICENSE), [license copy](LICENSES/Apache-2.0.txt) |
 
 These are installed dependencies, not vendored or relicensed source. PENMAN's
-AMR model is used directly; no SEMCAT code or Tendora-specific PENMAN patches
+AMR model is used directly; no SEMCAT code or caller-specific PENMAN patches
 are included. Other Python and JavaScript dependencies retain the licenses and
 notices distributed with their packages. This document is not a complete
 inventory of transitive dependencies; preserve their notices when distributing

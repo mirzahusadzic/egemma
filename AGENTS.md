@@ -39,6 +39,10 @@ The README is the brief; `docs/api.md` is the full contract of every endpoint.
 - `/judge` schemas are bounded before llama.cpp sees a grammar; schemas that
   crashed it stay covered by tests run in a child process.
 - One worker: rate limits and admission live in one process.
+- A caller's text and a model's thought are tokenized as text: a chat-template
+  mark in them is never a control token.
+- The AMR decoder joins only what the parser split, and supplies no concept,
+  relation or target; `linearized_raw` keeps the model's output as generated.
 
 ---
 
@@ -50,8 +54,9 @@ The README is the brief; `docs/api.md` is the full contract of every endpoint.
 - A behavior change or a fix comes with a test that fails on the old code and
   passes after.
 - Dependencies are pinned to exact versions in `requirements.txt`.
-- Docs stay generic: they describe eGemma's own contract, not any caller's use.
-  Docs-only changes need link and fact checks, not a full test run.
+- No caller's name, text or purpose in docs, code, tests or commit messages;
+  tests use made-up inputs. Docs describe eGemma's own contract.
+- Docs-only changes need link and fact checks, not a full test run.
 - Docs shape: top-level sections are `###` headings under a `---` rule, since
   GitHub underlines `#` and `##`; section leads of two or three sentences at
   most; tables only for tabular data, run-in lists otherwise; explanation

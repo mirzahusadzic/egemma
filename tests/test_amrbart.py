@@ -75,7 +75,7 @@ def test_api_triples_match_amr_aware_penman(parser, role, expected):
 
     assert result.decode_status == "ok"
     assert AMRTriple(*expected, "node") in result.triples
-    # This is also how Tendora reads the returned PENMAN field.
+    # This is also how a client reads the returned PENMAN field.
     graph = penman.decode(result.penman, model=amr_model)
     assert expected in graph.triples
     assert graph.triples == [(t.source, t.relation, t.target) for t in result.triples]

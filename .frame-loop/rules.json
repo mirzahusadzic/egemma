@@ -1,0 +1,128 @@
+{
+  "project": "egemma",
+  "version": 2,
+  "source": {
+    "file": "AGENTS.md",
+    "sha256": "03f1ff57b7d69de7881ba62199b69b62d12ce2c45d9774f930bad55769dbc190"
+  },
+  "note": "The index over this repository's AGENTS.md: each rule quotes its guide's line and is read by it; accepted with the author's OK.",
+  "rules": [
+    {
+      "id": "R1",
+      "kind": "obligation",
+      "scope": ["src/*"],
+      "text": "a behavior change or a fix comes with a test",
+      "quote": ["A behavior change or a fix comes with a test that fails on the old code and passes after."],
+      "check": {"changed": ["tests/*"]},
+      "accepted": true
+    },
+    {
+      "id": "R2",
+      "kind": "obligation",
+      "scope": ["src/*", "tests/*"],
+      "text": "ruff and pytest ran on the final tree",
+      "quote": ["Checks: `uv run ruff check .` and `uv run pytest`, which needs 80% coverage."],
+      "check": {"ran": ["uv run ruff check .", ["uv run pytest", "uv run pytest -q"]]},
+      "accepted": true
+    },
+    {
+      "id": "R3",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "local only, from pinned revisions that results name",
+      "quote": ["Local only: no request content goes to a hosted API. Models load from pinned revisions, and each model's results name its revision."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R4",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "an input past a model's window is never cut silently",
+      "quote": ["An input past a model's window is refused or reported with an explicit status, never cut without saying so; `/embed/texts` truncates, as documented."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R5",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "a server fault is an opaque 500",
+      "quote": ["A server fault is logged and answered with an opaque 500, never as a client error."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R6",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "one worker",
+      "quote": ["One worker: rate limits and admission live in one process."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R7",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "dependencies are pinned exactly",
+      "quote": ["Dependencies are pinned to exact versions in `requirements.txt`."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R8",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "focused fixes over new surface",
+      "quote": ["Prefer focused fixes over new endpoints, frameworks or dependencies."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R9",
+      "kind": "semantic",
+      "scope": ["src/routers/corpus.py", "src/routers/judge.py"],
+      "text": "admission for /corpus/gpt and /judge",
+      "quote": ["`/corpus/gpt` and `/judge` admit one request running and two waiting, then answer 503 with `Retry-After`. The body is validated before admission, and a slot is given back on every outcome."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R10",
+      "kind": "semantic",
+      "scope": ["src/routers/judge.py", "src/models/judge_schema.py", "src/models/summarization.py"],
+      "text": "/judge schemas are bounded before llama.cpp",
+      "quote": ["`/judge` schemas are bounded before llama.cpp sees a grammar; schemas that crashed it stay covered by tests run in a child process."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R11",
+      "kind": "semantic",
+      "scope": ["src/models/summarization.py"],
+      "text": "a caller's text is tokenized as text",
+      "quote": ["A caller's text and a model's thought are tokenized as text: a chat-template mark in them is never a control token."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R12",
+      "kind": "semantic",
+      "scope": ["src/models/amrbart.py"],
+      "text": "the AMR decoder joins only what the parser split",
+      "quote": ["The AMR decoder joins only what the parser split, and supplies no concept, relation or target; `linearized_raw` keeps the model's output as generated."],
+      "check": null,
+      "accepted": true
+    },
+    {
+      "id": "R13",
+      "kind": "principle",
+      "scope": ["*"],
+      "text": "callers stay out of the repository",
+      "quote": ["No caller's name, text or purpose in docs, code, tests or commit messages; tests use made-up inputs. Docs describe eGemma's own contract."],
+      "check": null,
+      "accepted": true
+    }
+  ]
+}

@@ -48,3 +48,10 @@ uv.lock
 # Local model weights; application model wrappers under src/models remain source.
 /models/
 node_modules
+
+# frame-loop: its record and work folder, and this machine's settings
+.claude/settings.local.json
+.frame-loop/*
+!.frame-loop/frame0.json
+!.frame-loop/rules.json
+!.frame-loop/tree/
