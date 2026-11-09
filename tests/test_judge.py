@@ -344,10 +344,13 @@ def test_judge_without_model_raises():
     ],
 )
 def test_a_schema_that_points_outside_or_cannot_be_held_is_refused(schema, message):
-    with patch("requests.get") as fetch:
+    # llama.cpp imports requests to fetch a remote $ref; a stand-in sees any
+    # fetch, whether or not requests is installed.
+    fetch = MagicMock()
+    with patch.dict(sys.modules, {"requests": fetch}):
         with pytest.raises(JudgeSchemaError, match=message):
             judge_grammar(schema)
-    fetch.assert_not_called()
+    fetch.get.assert_not_called()
 
 
 @pytest.mark.parametrize(

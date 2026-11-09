@@ -39,7 +39,7 @@ reproduced in [`LICENSES/nanoGPT-MIT.txt`](LICENSES/nanoGPT-MIT.txt).
 | Package | License | Source |
 | --- | --- | --- |
 | PENMAN 1.3.1 | MIT; copyright 2016–2019 Michael Wayne Goodman | [Upstream](https://github.com/goodmami/penman/tree/v1.3.1), [license copy](LICENSES/PENMAN-MIT.txt) |
-| Transformers 4.57.6 | Apache-2.0 | [Upstream license](https://github.com/huggingface/transformers/blob/v4.57.6/LICENSE), [license copy](LICENSES/Apache-2.0.txt) |
+| Transformers 5.10.1 | Apache-2.0 | [Upstream license](https://github.com/huggingface/transformers/blob/v5.10.1/LICENSE), [license copy](LICENSES/Apache-2.0.txt) |
 
 These are installed dependencies, not vendored or relicensed source. PENMAN's
 AMR model is used directly; no SEMCAT code or Tendora-specific PENMAN patches
